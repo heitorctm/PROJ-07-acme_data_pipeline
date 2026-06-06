@@ -1,0 +1,98 @@
+name: 'acme_dw'
+version: '1.0.0'
+
+profile: 'acme_dw'
+
+vars:
+  # price list considered "current" for valuing inventory at sales price.
+  # change here when the list changes (e.g.: 100 → 101).
+  current_price_list: 100
+  # elementary: INSERT chunk size for dbt artifacts. The package default is 5000, but
+  # SQL Server has a hard limit of 1000 row values per INSERT statement. 500 leaves headroom.
+  dbt_artifacts_chunk_size: 500
+
+# Allows the project's override macros (e.g.: sqlserver__edr_date_trunc) to take
+# precedence over those of the elementary package. Needed because the package has no
+# `sqlserver__` implementation for several macros — without this, it falls back to `fabric__`,
+# which uses DATETRUNC() (a function only available from SQL Server 2022 onward).
+dispatch:
+  - macro_namespace: elementary
+    search_order: ['acme_dw', 'elementary']
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  # dbt_packages is NOT here on purpose: packages only need to be reinstalled
+  # when packages.yml changes. A routine `dbt clean` should not delete them.
+  # To reinstall packages from scratch: `dbt clean && rm -r dbt_packages && dbt deps`
+
+models:
+  acme_dw:
+    staging:
+      +materialized: view
+      sap:
+        # single schema for all SAP staging — the domain split lives in int.
+        # the sales/purchases/... folders are just visual code organization.
+        # a staging table can be cross-domain (e.g.: business_partner_ocrd).
+        +schema: stg_sap
+        sales:
+          +tags: ['staging', 'sap', 'sales']
+        purchases:
+          +tags: ['staging', 'sap', 'purchases']
+        master_data:
+          +tags: ['staging', 'sap', 'master_data']
+        items:
+          +tags: ['staging', 'sap', 'items']
+        finance:
+          +tags: ['staging', 'sap', 'finance']
+      sharepoint:
+        # spreadsheets maintained by the commercial and administrative teams.
+        +schema: stg_sharepoint
+        master_data:
+          +tags: ['staging', 'sharepoint', 'master_data']
+        sales:
+          +tags: ['staging', 'sharepoint', 'sales']
+    intermediate:
+      +materialized: table
+      # cross-domain root (warehouse, user, item, partner) uses the default schema
+      +schema: int_common
+      sales:
+        +schema: int_sales
+        +tags: ['int', 'sales']
+      purchases:
+        +schema: int_purchases
+        +tags: ['int', 'purchases']
+      finance:
+        +schema: int_finance
+        +tags: ['int', 'finance']
+      inventory:
+        +schema: int_inventory
+        +tags: ['int', 'inventory']
+    marts:
+      +materialized: table
+      # root (dim_date and other cross-domain models) uses the default schema
+      +schema: mart_common
+      sales:
+        +schema: mart_sales
+        +tags: ['mart', 'sales']
+      purchases:
+        +schema: mart_purchases
+        +tags: ['mart', 'purchases']
+      finance:
+        +schema: mart_finance
+        +tags: ['mart', 'finance']
+      inventory:
+        +schema: mart_inventory
+        +tags: ['mart', 'inventory']
+
+  # elementary-data package: dedicated schema outside the project's layers.
+  # Observability tables (runs, tests, anomalies) consumed by the `edr` CLI.
+  elementary:
+    +schema: elementary
+    +tags: ['elementary', 'observability']

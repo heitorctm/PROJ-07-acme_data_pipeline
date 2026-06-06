@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Planning (local, not versioned)
+ROADMAP.md
+
+# Airflow runtime
+logs/
+plugins/
+config/airflow.cfg
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.claude/

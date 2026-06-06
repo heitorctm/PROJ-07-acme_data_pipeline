@@ -1,0 +1,3 @@
+# Single dependency: the generator (linked_server/_generator/generate_sql.py) reads tables.yaml.
+# The ingestion itself runs on SQL Server (linked server + SQL Agent), no Python.
+pyyaml

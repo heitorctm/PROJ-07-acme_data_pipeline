@@ -1,0 +1,248 @@
+version: 2
+
+models:
+  - name: fact_daily_inventory_movement
+    description: >
+      Inventory flow history aggregated by day. Granularity:
+      1 row per `(date, item_code, warehouse_code)`.
+
+      **Materialization:** incremental append. Each run only adds closed days that
+      are not yet in the fact. Pure append is safe because OINM is an audit trail
+      (SAP B1 does not alter past movements).
+
+      **Window:** `movement_date < today`. The current day never enters (still volatile).
+      For the "today" position use [[fact_inventory]].
+
+      **Flow metrics** (day sums): `inflow_quantity`, `outflow_quantity`,
+      `movement_quantity`, `transacted_amount` (R$ of movement), `movement_count`.
+
+      **End-of-day state metrics** (from the last movement — highest `transaction_number`):
+      `calculated_average_price` (CalcPrice), `inventory_value_after_movement` (Balance — R$
+      cumulative, native to SAP), `quantity_after_movement` (balance in units).
+
+      **Reconstructing the balance on a past date:** direct query without cumulative sum
+      (Balance is already cumulative in SAP):
+
+      ```sql
+      select top 1 inventory_value_after_movement, quantity_after_movement
+      from mart_inventory.fact_daily_inventory_movement
+      where item_code = 'X' and warehouse_code = 'Y' and date <= 'D'
+      order by date desc;
+      ```
+
+      **Density:** there is only a row on days with movement for that (item, warehouse) pair.
+      Analysis of "days without movement" needs to cross with `dim_date` or use `LEAD()`.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date, item_code, warehouse_code]
+    columns:
+      - name: date
+        description: Date of the aggregated day. Always < today (closed day).
+        tests: [not_null]
+      - name: item_code
+        description: Item (FK to `int.item`).
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Warehouse (FK to `int.warehouse`).
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code
+      - name: item_name
+        description: Item name (denormalized).
+      - name: family_code
+        description: Item family (hierarchy level 1).
+      - name: family_name
+        description: Text name of the family.
+      - name: class_code
+        description: Item class (hierarchy level 2).
+      - name: class_name
+        description: Text name of the class.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3).
+      - name: sub_class_name
+        description: Text name of the sub-class.
+      - name: abc_curve
+        description: ABC curve of the item.
+      - name: unit_of_measure
+        description: Item unit of measure.
+      - name: warehouse_name
+        description: Warehouse name (denormalized).
+      - name: branch_id
+        description: ID of the branch linked to the warehouse.
+      - name: branch_name
+        description: Branch name.
+      - name: store_code
+        description: Code of the store linked to the warehouse.
+      - name: store_name
+        description: Store name.
+      - name: inflow_quantity
+        description: Sum of OINM `InQty` for the day.
+        tests: [not_null]
+      - name: outflow_quantity
+        description: Sum of OINM `OutQty` for the day.
+        tests: [not_null]
+      - name: movement_quantity
+        description: '`inflow_quantity - outflow_quantity`. Positive = net inflow; negative = net outflow.'
+        tests: [not_null]
+      - name: transacted_amount
+        description: Sum of `TransValue` for the day — R$ amount moved (positive for inflows, negative for outflows).
+        tests: [not_null]
+      - name: movement_count
+        description: Number of OINM transactions on that day for the (item, warehouse) pair.
+        tests: [not_null]
+      - name: calculated_average_price
+        description: '`CalcPrice` of the day''s last movement — the item''s average cost in that warehouse at the end of the day.'
+      - name: inventory_value_after_movement
+        description: '`Balance` of the day''s last movement — cumulative R$ inventory value of the (item, warehouse) pair. Cumulative, native to SAP.'
+      - name: quantity_after_movement
+        description: 'Balance in units of the (item, warehouse) pair at the end of the day. Derived from `Balance / CalcPrice`.'
+
+  - name: fact_inventory
+    description: >
+      CURRENT inventory snapshot by item × warehouse, valued at the current
+      price list, **with turnover and coverage metrics** derived from the outflow history.
+
+      Granularity: 1 row per `(item_code, warehouse_code)`.
+
+      ### Descriptive attributes
+      Item hierarchy (family, class, sub-class, ABC curve, unit) and warehouse
+      hierarchy (branch, store) come denormalized for direct consumption in BI.
+
+      ### Snapshot
+      `inventory_quantity`, `committed_quantity`, `ordered_quantity` come directly from
+      OITW. `list_price` comes from `int_common.item_price_list` filtered by the
+      `current_price_list` var (today = 100). `inventory_value_at_list_price = qty × price`.
+
+      ### Turnover / coverage metrics
+      Historical outflows come from `int_inventory.inventory_movements` (rows with
+      `outflow_quantity > 0`). Windows: 30d / 45d / 60d (last N calendar days from
+      yesterday) and `year` (year-to-date — from Jan 1 of the current year up to yesterday).
+
+      - `outflow_quantity_Xd`: sum of units that went out in the period.
+      - `turnover_Xd = outflow_quantity_Xd / inventory_quantity` — how many times the
+        current inventory turned over in the period.
+      - `coverage_days_Xd = inventory_quantity × N_days / outflow_quantity_Xd` — in
+        how many days the inventory runs out keeping the window's pace. For `year`, N = days
+        elapsed in the year up to yesterday.
+      - `last_outflow_date` + `days_without_outflow` — identifies a stalled item.
+
+      ### Applied filters (mart decides; ints preserve)
+      - Inactive warehouses excluded.
+      - Items without a price in the current list → `list_price` and `inventory_value_at_list_price`
+        NULL (signals a master-data gap).
+      - Items without outflow history → `outflow_quantity_*` = 0, `turnover_*` / `coverage_*` /
+        `last_outflow_date` / `days_without_outflow` = NULL.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [item_code, warehouse_code]
+    columns:
+      - name: item_code
+        description: Referential integrity validated against `int.item`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Referential integrity validated against `int.warehouse`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code
+      - name: item_name
+        description: Item name (denormalized).
+      - name: family_code
+        description: Item family (hierarchy level 1).
+      - name: family_name
+        description: Text name of the family.
+      - name: class_code
+        description: Item class (hierarchy level 2).
+      - name: class_name
+        description: Text name of the class.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3).
+      - name: sub_class_name
+        description: Text name of the sub-class.
+      - name: abc_curve
+        description: ABC curve of the item.
+      - name: unit_of_measure
+        description: Item unit of measure.
+      - name: warehouse_name
+        description: Warehouse name (denormalized).
+      - name: branch_id
+        description: ID of the branch linked to the warehouse.
+      - name: branch_name
+        description: Branch name.
+      - name: store_code
+        description: Linked store (may be NULL for operational warehouses).
+      - name: store_name
+        description: Store name.
+      - name: inventory_quantity
+        description: '`OnHand` from OITW — physical quantity in inventory.'
+        tests: [not_null]
+      - name: committed_quantity
+        description: '`IsCommited` — qty allocated to open sales orders.'
+        tests: [not_null]
+      - name: ordered_quantity
+        description: '`OnOrder` — qty on open purchase orders.'
+        tests: [not_null]
+      - name: list_price
+        description: >
+          Unit price of the item in the current list (var `current_price_list`, today = 100).
+          NULL if the item has no price registered in that list.
+      - name: inventory_value_at_list_price
+        description: >
+          `inventory_quantity × list_price`. NULL for items without a price in the current list.
+
+      # ─── historical outflows (basis for turnover/coverage) ───
+      - name: outflow_quantity_30d
+        description: Units that went out in the last 30 days (D-30 to D-1). 0 if no outflow.
+        tests: [not_null]
+      - name: outflow_quantity_45d
+        description: Units that went out in the last 45 days.
+        tests: [not_null]
+      - name: outflow_quantity_60d
+        description: Units that went out in the last 60 days.
+        tests: [not_null]
+      - name: outflow_quantity_ytd
+        description: Units that went out in the current year (year-to-date — from Jan 1 to D-1).
+        tests: [not_null]
+
+      # ─── turnover (outflows ÷ current inventory) ───
+      - name: turnover_30d
+        description: '`outflow_quantity_30d / inventory_quantity`. NULL if inventory = 0.'
+      - name: turnover_45d
+        description: '`outflow_quantity_45d / inventory_quantity`. NULL if inventory = 0.'
+      - name: turnover_60d
+        description: '`outflow_quantity_60d / inventory_quantity`. NULL if inventory = 0.'
+      - name: turnover_ytd
+        description: Year-to-date turnover.
+
+      # ─── coverage (in how many days the inventory runs out keeping the window's pace) ───
+      - name: coverage_days_30d
+        description: '`inventory × 30 / outflow_30d`. NULL if no outflows in the period.'
+      - name: coverage_days_45d
+        description: '`inventory × 45 / outflow_45d`. NULL if no outflows in the period.'
+      - name: coverage_days_60d
+        description: '`inventory × 60 / outflow_60d`. NULL if no outflows in the period.'
+      - name: coverage_days_ytd
+        description: '`inventory × days_elapsed_in_year / outflow_year`.'
+
+      # ─── activity ───
+      - name: last_outflow_date
+        description: Date of the last outflow movement for the (item, warehouse) pair. NULL if there was never any.
+      - name: days_without_outflow
+        description: '`datediff(days, last_outflow_date, today)`. NULL if there was never an outflow.'

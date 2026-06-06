@@ -1,0 +1,118 @@
+version: 2
+
+models:
+  - name: business_partner_ocrd
+    description: Master data of business partners (customers and suppliers). One record per partner.
+    columns:
+      - name: partner_code
+        description: Primary key of the partner in SAP (CardCode).
+        tests:
+          - not_null
+          - unique
+      - name: partner_name
+        description: Partner name (CardName) — the main SAP B1 field, always populated (0.01% NULL).
+      - name: foreign_name
+        description: "Name in a secondary language/alphabet (CardFName) — rarely populated in a Brazilian context (35% NULL). Not exposed in int.partner but kept available here for future cases."
+
+  - name: salesperson_oslp
+    description: Master data of salespeople. One record per salesperson.
+    columns:
+      - name: salesperson_code
+        description: Primary key of the salesperson in SAP (SlpCode).
+        tests:
+          - not_null
+          - unique
+
+  - name: branch_obpl
+    description: Master data of branches (Branch). One record per branch.
+    columns:
+      - name: branch_id
+        description: Primary key of the branch in SAP (BPLId).
+        tests:
+          - not_null
+          - unique
+
+  - name: warehouse_owhs
+    description: Master data of warehouses. One record per warehouse.
+    columns:
+      - name: warehouse_code
+        description: Primary key of the warehouse in SAP (WhsCode).
+        tests:
+          - not_null
+          - unique
+
+  - name: partner_group_ocrg
+    description: Business partner groups.
+    columns:
+      - name: group_code
+        description: Primary key of the partner group in SAP (GroupCode).
+        tests:
+          - not_null
+          - unique
+
+  - name: manufacturer_omrc
+    description: Master data of manufacturers.
+    columns:
+      - name: manufacturer_code
+        description: Primary key of the manufacturer in SAP (FirmCode).
+        tests:
+          - not_null
+          - unique
+
+  - name: price_list_opln
+    description: Price lists.
+    columns:
+      - name: price_list_number
+        description: Primary key of the price list in SAP (ListNum).
+        tests:
+          - not_null
+          - unique
+
+  - name: additional_expense_oexd
+    description: Registered additional expenses.
+    columns:
+      - name: expense_code
+        description: Primary key of the additional expense in SAP (ExpnsCode).
+        tests:
+          - not_null
+          - unique
+
+  - name: fiscal_usage_ousg
+    description: Registered fiscal usages.
+    columns:
+      - name: usage_id
+        description: Primary key of the fiscal usage in SAP (IdNumber).
+        tests:
+          - not_null
+          - unique
+
+  - name: invoice_series_nfn1
+    description: Numbering series for fiscal documents.
+    columns:
+      - name: series_code
+        description: Numbering series code (Series from NFN1).
+        tests:
+          - not_null
+
+  - name: user_ousr
+    description: Master data of SAP users.
+    columns:
+      - name: user_id
+        description: SAP internal numeric key for the user (INTERNAL_K).
+        tests:
+          - not_null
+          - unique
+      - name: user_login
+        description: User login in SAP (USER_CODE).
+        tests:
+          - not_null
+          - unique
+
+  - name: store
+    description: Master data of stores (SAP user-defined table — @STORES).
+    columns:
+      - name: store_code
+        description: Primary key of the store (Code from the user-defined table @STORES).
+        tests:
+          - not_null
+          - unique

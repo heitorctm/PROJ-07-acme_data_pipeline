@@ -1,0 +1,244 @@
+version: 2
+
+models:
+  - name: fact_accounts_receivable
+    description: >
+      # fact_accounts_receivable
+
+      This is the table that answers "**how much do customers owe me**".
+      Each row represents **one entire sales invoice**, with a summary of
+      its payment plan (how many installments, how much has already been
+      paid, how much is still outstanding, when it falls due). It is the
+      basis for delinquency KPIs, expected cash flow, days sales
+      outstanding (DSO) and ageing.
+
+      ## Why each row is an invoice, not an installment
+
+      In SAP, a sales invoice generates N installments — it can be paid in
+      full (1 installment) or split into 30/60/90 days (3 installments).
+      Each installment has its own due date and amount.
+
+      The fact grain is the **whole invoice** (not the installment), because
+      the real business questions are:
+
+        - "How much does customer X owe me?" → answered at the invoice level
+        - "Was this invoice paid, partially paid, or unpaid?" → answered at
+          the invoice level
+        - "How much will I collect by the end of the month?" → sum of the
+          first installments of the open invoices
+
+      Installment grain would inflate the fact (210k → 80k more rows)
+      without managerial gain. The metrics aggregated at the invoice level
+      (installment_count, paid_installment_count, etc) preserve the relevant
+      information without needing to expand the breakdown.
+
+      ## Why some invoices that exist in SAP do NOT appear here
+
+      The fact consumes exactly the **same invoices that are in [[fact_sales]]**
+      — it inherits the entire filtering rule for real commercial sales. It
+      makes sense: "accounts receivable" only exists for sales that count as
+      real revenue. If the sale does not count in fact_sales (e.g. canceled,
+      intercompany, hidden customer), its receivable should not count either.
+
+      Instead of duplicating the filters, fact_accounts_receivable consumes
+      the same models that fact_sales uses and applies the same canonical
+      rules.
+
+      ### 1. Only counts invoices (not credit memos)
+
+      A credit memo does not generate a receivable — it generates a payable
+      (money to refund), which is handled differently. If at some point it
+      becomes relevant, it would become a separate `valor_devolvido` column
+      or another fact.
+
+      → **Technical filter:** `d.document_type = 'invoice'`.
+
+      ### 2. Only counts invoices with canceled = 'no'
+
+      Same rule as fact_sales — excludes canceled ('Y') and reversed ('C')
+      invoices. A canceled invoice does not generate a real receivable.
+
+      → **Technical filter:** `canceled = 'no'`.
+
+      ### 3. Only counts customers visible in BI (partner_show_in_bi)
+
+      A customer flagged as `'N'` in the master data does not enter
+      managerial analyses — including "how much they owe me". Exception: an
+      invoice with `document_show_in_bi = 'yes'` ("force display") is
+      included even for a hidden customer — this is the **global override**
+      (same rule as `fact_sales`), which bypasses
+      partner/intercompany/tax-usage filters.
+
+      → **Technical filter:** `partner_show_in_bi = 'yes'` (+ global override `document_show_in_bi = 'yes'`).
+
+      ### 4. Does not count intercompany sales (except branch 9)
+
+      Same logic as fact_sales: invoices between Acme group companies are
+      not real revenue, so they do not generate a real receivable.
+      Exception: branch 9 (the group's manufacturing unit) whose "internal
+      sale" counts as real revenue (the group's factory).
+
+      → **Technical filter:** `group_code <> 111 OR branch_id = 9`.
+
+      ### 5. Only counts invoices with a commercial-sale tax usage
+
+      Same tax-usage whitelist as fact_sales — only a sales usage generates
+      a real commercial receivable.
+
+      → **Technical filter:** `usage_id IN (9, 10, 20, 22, 37, 46, 56)` on the line.
+
+      ## Independence from mart_sales
+
+      Although it **replicates exactly** the fact_sales filters, this fact
+      **does not consume** `mart_sales.fact_sales` directly — it consumes
+      the `int_sales` models and applies the same filters via shared macros.
+      This follows the Kimball pattern "marts do not depend on other marts":
+      each fact is independent, can be built in any order, and changes in one
+      mart do not cascade to another.
+
+      ## Payment status (calculated column)
+
+      Each invoice here has an aggregated status calculated from the
+      installments:
+
+      - **paid** — `paid_amount >= total_amount` → the customer settled
+        everything. It appears in history but is not in "receivables".
+      - **partial** — `0 < paid_amount < total_amount` → the customer paid
+        some installments but still owes. The open balance comes from the
+        next ones.
+      - **open** — `paid_amount = 0` → the customer has not paid anything
+        yet. It may be within term or overdue.
+
+      ## Why already-paid invoices remain in the fact
+
+      We keep invoices with `payment_status = 'paid'` (zero balance) because:
+
+        - They allow calculating the **average payment term** (invoice
+          `date` → date of the last payment), an important management metric
+        - They allow **ageing-by-cohort analysis** (invoices issued in
+          January were paid in how long?)
+        - They allow computing the **historical delinquency rate**
+
+      Whoever needs only "receivables right now" filters in BI: `WHERE
+      payment_status <> 'paid'` or `open_balance > 0`.
+
+      ## Link to the dimensions
+
+      | FK in the fact | Dimension |
+      |---|---|
+      | `date` (invoice CreateDate) | [[dim_date]] |
+      | `first_due_date` / `last_due_date` | [[dim_date]] |
+      | `partner_code` (debtor customer) | [[dim_partner]] |
+      | `employee_code` (responsible salesperson) | [[dim_employees]] |
+      | `store_code` | [[dim_store]] |
+
+      ## Additive metrics (use SUM in BI)
+
+      - `total_amount` — total issued on the invoice (sum of the installments)
+      - `paid_amount` — total already collected up to the extraction moment
+      - `open_balance` — `total_amount − paid_amount` (what is still outstanding)
+      - `installment_count` — total number of installments on the invoice
+      - `paid_installment_count` — installments with `paid_amount >= installment_amount`
+      - `open_installment_count` — installments with `paid_amount = 0` (not started)
+      - `partial_installment_count` — installments with partial payment
+    columns:
+      - name: document_type
+        description: "Always 'invoice' (only outbound invoices have receivable installments)."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: DocEntry from OINV.
+        tests:
+          - not_null
+      - name: document_number
+        description: Fiscal number of the outbound invoice.
+      - name: date
+        description: >
+          Date the invoice was created in SAP (`CreateDate`). The fact's only
+          primary date column — aligns with the official BI. FK to [[dim_date]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+      - name: partner_code
+        description: Debtor customer code. FK to [[dim_partner]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_partner')
+                field: partner_code
+      - name: employee_code
+        description: Salesperson responsible for the invoice. FK to [[dim_employees]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_employees')
+                field: employee_code
+              config:
+                where: "employee_code is not null"
+      - name: store_code
+        description: Document store. FK to [[dim_store]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_code
+              config:
+                where: "store_code is not null and store_code <> ''"
+      - name: first_due_date
+        description: Earliest due date among the invoice's installments.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+              config:
+                where: "first_due_date is not null"
+      - name: last_due_date
+        description: Latest due date among the invoice's installments.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+              config:
+                where: "last_due_date is not null"
+      - name: load_kit
+        description: "Load type: 'retail', 'wholesale' or NULL."
+      - name: presale_channel
+        description: Origin channel of the presale.
+      - name: total_amount
+        description: Total amount issued (sum of the INV6.InsTotal installments).
+        tests:
+          - not_null
+      - name: paid_amount
+        description: Total already collected (sum of the INV6.Paid installments).
+        tests:
+          - not_null
+      - name: open_balance
+        description: "`total_amount - paid_amount`. Can be negative in rare cases (payment > issued)."
+        tests:
+          - not_null
+      - name: installment_count
+        description: Total number of installments on the invoice.
+        tests:
+          - not_null
+      - name: paid_installment_count
+        description: Installments with `paid_amount >= installment_amount`.
+      - name: open_installment_count
+        description: Installments with `paid_amount = 0` (payment not started).
+      - name: partial_installment_count
+        description: Installments with `0 < paid_amount < installment_amount` (partially paid).
+      - name: payment_status
+        description: "Aggregated invoice status: 'paid' / 'partial' / 'open'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['paid', 'partial', 'open'] } }
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [document_type, doc_entry]

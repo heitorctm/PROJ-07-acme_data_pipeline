@@ -1,0 +1,26 @@
+# venv
+.venv/
+venv/
+
+# dbt
+target/
+logs/
+dbt_packages/
+
+# elementary (edr report) — relatório HTML, JSON e logs gerados localmente
+edr_target/
+
+# env / segredos — NUNCA versionar
+.env
+*.env
+
+# dbt gerado automaticamente
+.user.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

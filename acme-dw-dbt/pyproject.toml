@@ -1,0 +1,28 @@
+[project]
+name = "acme-dw-dbt"
+version = "0.1.0"
+description = "dbt project for Acme Building Materials data warehouse"
+readme = "README.md"
+requires-python = ">=3.12"
+# Versions pinned with `==` deliberately. dbt-sqlserver inherits macros from
+# dbt-fabric, which has known bugs in some versions (e.g. last_day).
+# Upgrades must be manual and audited — edit here and run `uv lock --upgrade`.
+dependencies = [
+    "dbt-core==1.11.9",
+    "dbt-sqlserver==1.9.0",
+    # `edr` CLI (elementary-data) to generate the dbt-native observability report.
+    # The [sqlserver] extra enables the EDR adapter on the project's own SQL Server.
+    # Keep major.minor aligned with the elementary dbt package (packages.yml).
+    "elementary-data[sqlserver]==0.23.4",
+]
+
+[dependency-groups]
+# Development tools (linting, tests, etc.).
+# Install alongside production: `uv sync --dev`
+# Install production only (final CI/CD): `uv sync --no-dev`
+dev = [
+    # example: uncomment when needed
+    # "sqlfluff>=3.0.0",       # SQL linter with sqlserver adapter support
+    # "sqlfmt>=0.21.0",        # opinionated SQL/Jinja formatter
+    # "pre-commit>=3.0.0",     # validation hooks before commit
+]

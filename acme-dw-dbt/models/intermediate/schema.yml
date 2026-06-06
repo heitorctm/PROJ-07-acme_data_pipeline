@@ -1,0 +1,357 @@
+version: 2
+
+models:
+  - name: partner
+    description: >
+      Business partner enriched with group, franchise, pre-sale channel and normalized CNPJ/CPF.
+      Cross-domain building block — reused by sales (customer), purchases (supplier) and finance.
+      The normalized CNPJ/CPF (no punctuation) enables matching against external sources.
+      Grain: one record per partner_code.
+    columns:
+      - name: partner_code
+        description: Business partner code (CardCode from OCRD).
+        tests:
+          - not_null
+          - unique
+      - name: partner_name
+        description: Partner name (CardName from OCRD) — primary field, always populated (only 0.01% NULL). CardFName is available in staging as foreign_name but is not exposed here (rarely used, 35% NULL).
+      - name: partner_type
+        description: "Partner type. Values: 'customer', 'supplier', 'lead'."
+      - name: group_code
+        description: Partner group code (GroupCode from OCRD), references OCRG.
+      - name: group_name
+        description: Partner group name, resolved via OCRG.
+      - name: salesperson_code
+        description: Code of the salesperson responsible for the partner (SlpCode from OCRD).
+      - name: franchise_name
+        description: Name of the franchise associated with the partner (custom field U_franchiseName from OCRD).
+      - name: presale_channel
+        description: >
+          Partner origin channel for pre-sale.
+          Values: 'no', 'crm', 'crm steel frame', 'crm drywall', 'crm floors',
+          'crm acoustic', 'crm frames', 'crm mortar', 'internal (google)'.
+      - name: show_in_bi
+        description: >
+          Flag controlling the partner's visibility in BI reports.
+          Values: 'yes', 'no'. Partners with 'no' are typically internal or inactive.
+      - name: cpf_cnpj_official
+        description: CPF or CNPJ as registered in the LicTradNum field of OCRD, without normalization.
+      - name: cpf_cnpj_normalized
+        description: >
+          CPF or CNPJ without dots, slashes and hyphens, extracted from the Password field of OCRD.
+          If empty, returns a fallback in the format 'SAP' + partner_code to guarantee not null.
+        tests:
+          - not_null
+      - name: registration_date
+        description: Date the partner was registered in SAP (CreateDate from OCRD).
+      - name: updated_date
+        description: Date of the last update to the registration (UpdateDate from OCRD).
+
+  - name: item
+    description: >
+      Item enriched with the full commercial hierarchy: family, class and sub-class.
+      The hierarchy is defined by custom fields in the item master (OITM) that reference
+      custom tables (@ITEM_FAMILY, @ITEM_CLASS, @ITEM_SUB_CLASS).
+      Cross-domain building block — reused by sales and purchases.
+      Grain: one record per item_code.
+    columns:
+      - name: item_code
+        description: Item code (ItemCode — primary key of OITM).
+        tests:
+          - not_null
+          - unique
+      - name: item_name
+        description: Full item description in the master record (ItemName from OITM).
+      - name: family_code
+        description: Item family code (custom field U_FAMILY from OITM).
+      - name: family_name
+        description: Family name, resolved via @ITEM_FAMILY. Primary product grouping dimension.
+      - name: class_code
+        description: Item class code (custom field U_CLASS from OITM).
+      - name: class_name
+        description: Class name, resolved via @ITEM_CLASS. Intermediate level of the hierarchy.
+      - name: sub_class_code
+        description: Item sub-class code (custom field U_SUB_CLASS from OITM).
+      - name: sub_class_name
+        description: Sub-class name, resolved via @ITEM_SUB_CLASS. Most granular level of the hierarchy.
+      - name: abc_curve
+        description: "ABC classification of the item by sales volume. Values: 'a' (high turnover), 'b' (medium), 'c' (low turnover)."
+      - name: unit_of_measure
+        description: Inventory unit of measure of the item (InvntryUom from OITM).
+      - name: manufacturer_code
+        description: Item manufacturer code (FirmCode from OITM), references OMRC.
+      - name: active
+        description: "Flag for an item active for sale. Values: 'yes', 'no'."
+      - name: inactive
+        description: "Flag for a frozen/inactive item. Values: 'yes', 'no'. An inactive item does not appear in new documents."
+
+  - name: item_price_list
+    description: >
+      Unit price of the item in each registered price list. Grain:
+      1 row per `(item_code, price_list_number)`.
+
+      **Does not filter** — preserves ALL lists from ITM1. The mart is what chooses the list
+      (typically via the `current_price_list` var in `dbt_project.yml`). Keeps the int as a
+      reusable "raw building block": for a future use case of comparing lists, tracking price
+      evolution, or consumption by other marts (sales/purchases), there's no need to create another int.
+
+      Enrichment: the textual list name comes from OPLN (`price_list_name`).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [item_code, price_list_number]
+    columns:
+      - name: item_code
+        description: Referential integrity validated against `int.item`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: price_list_number
+        description: Price list number (PriceList from ITM1, ListNum from OPLN).
+        tests: [not_null]
+      - name: price_list_name
+        description: Textual list name (OPLN.ListName).
+      - name: list_price
+        description: >
+          Unit price of the item in this list (ITM1.Price). May be NULL —
+          this occurs when the item is registered in the list but the price was
+          not filled in SAP (validated: 2 cases in cost lists).
+
+  - name: warehouse
+    description: >
+      Warehouse enriched with the branch and the store it is linked to.
+      Each warehouse in SAP has a branch (BPLid) and a custom store (U_STORE) — this model
+      resolves these joins and exposes the name of both.
+      Cross-domain building block — reused by sales, purchases and inventory.
+      Grain: one record per warehouse_code.
+    columns:
+      - name: warehouse_code
+        description: Warehouse code (WhsCode — primary key of OWHS).
+        tests:
+          - not_null
+          - unique
+      - name: warehouse_name
+        description: Warehouse name (WhsName from OWHS).
+      - name: branch_id
+        description: ID of the branch the warehouse belongs to (BPLid from OWHS), references OBPL.
+      - name: branch_name
+        description: Branch name, resolved via OBPL.
+      - name: branch_nomenclature
+        description: "Internal branch nomenclature (U_NOMENCLATURE from OBPL) — e.g. 'mega store rj'."
+      - name: store_code
+        description: Code of the store linked to the warehouse via the custom field U_STORE of OWHS.
+      - name: store_name
+        description: Name of the warehouse's store, resolved via @STORES.
+      - name: inactive
+        description: "Flag for an inactive warehouse. Values: 'yes', 'no'."
+
+  - name: user
+    description: >
+      SAP user — passthrough of the OUSR master record with names in lowercase.
+      Cross-domain building block — reused by purchases (UserSign in OPOR/OPRQ).
+      Grain: one record per user_id.
+    columns:
+      - name: user_id
+        description: Numeric internal SAP key (INTERNAL_K from OUSR).
+        tests:
+          - not_null
+          - unique
+      - name: user_login
+        description: User's SAP login (USER_CODE from OUSR).
+        tests:
+          - not_null
+          - unique
+      - name: user_name
+        description: User name (U_NAME from OUSR).
+      - name: department_id
+        description: ID of the department the user belongs to (Department from OUSR). No department table in the project — just the code.
+
+  - name: employee
+    description: >
+      People registered in OSLP (salespeople, managers, B2B executives...).
+      Cross-domain building block — used by sales (order/invoice authorship), goals
+      and commission. The store where a person works is a fact (changes over time) and lives
+      in [[salesperson_bridge]], not here.
+
+      The name in SAP comes in the format 'Name - Store - Role' (or variations).
+      `employee_name` extracts the first part (lowercase, accent-insensitive)
+      so it is usable as a label in BI. `sap_full_name` preserves
+      the original text for auditing.
+
+      Coverage (Jan/2026): 382 people — 377 active + 5 with SlpName
+      'NÃO UTILIZAR%' (written off in SAP, kept to preserve authorship
+      of historical invoices).
+
+      The store where each person works over time lives in
+      [[salesperson_bridge]], derived from actual SAP document activity.
+    columns:
+      - name: employee_code
+        description: SlpCode from OSLP. Primary key of the dimension.
+        tests:
+          - not_null
+          - unique
+      - name: employee_name
+        description: >
+          Canonical name in lowercase + accent-insensitive — first part
+          of SlpName before the first ' - '. Used as a label in BI.
+        tests:
+          - not_null
+      - name: sap_full_name
+        description: >
+          Original SlpName text (e.g. 'João Silva - Mega Loja RJ -
+          Vendedor'). Preserved for auditing — do not use as a BI label.
+        tests:
+          - not_null
+      - name: status
+        description: >
+          'active' when the SlpName does not start with 'NÃO UTILIZAR'; 'inactive'
+          when it does (5 cases today — employees written off in SAP).
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['active', 'inactive'] } }
+
+  - name: standardized_store
+    description: >
+      Store enriched with the new name (commercial standardization with a state
+      (UF) prefix, e.g. 'rj-bonsucesso', 'mg-juiz de fora') coming from `store_mapping`
+      maintained by the commercial team in SharePoint. Cross-domain building block — used
+      by sales, purchases, inventory and HR.
+
+      The store master in SAP (`@STORES`) uses historical names with no regional
+      standard ('BONSUCESSO', 'MEGA LOJA JF', 'ATACADO SP'). The mapping
+      standardizes them with a state (UF) prefix.
+
+      Grain: 1 record per `store_code`.
+
+      ## Coverage
+
+      Today (Jan/2026): dozens of stores in @STORES, a minority without a mapping in the
+      mapping table — administrative/internal units (non-commercial), plus
+      some new or renamed stores not yet reflected in the mapping.
+      `new_store_name` is NULL for those. [[dim_store]] falls back to the old name.
+
+      ## Known merges
+
+      The mapping has 3 cases of 2 old names pointing to 1 new name:
+      - 'Bonsucesso' + 'Bonsucesso - RJ' → 'rj-bonsucesso'
+      - 'Juiz de Fora' + 'Mega Loja JF' → 'mg-juiz de fora'
+      - 'Atacado RJ' + 'RJ-Executivo B2B' → 'rj-executivo b2b'
+
+      Since the grain here is store_code (not name), they appear as N
+      codes sharing the same new name — expected, it's a commercial
+      unification.
+    columns:
+      - name: store_code
+        description: Code of @STORES in SAP — primary key.
+        tests:
+          - not_null
+          - unique
+      - name: old_store_name
+        description: >
+          Historical name in SAP in lowercase (Name from @STORES). Always populated.
+        tests:
+          - not_null
+      - name: new_store_name
+        description: >
+          Name standardized by the commercial area in lowercase (with a state (UF) prefix
+          where applicable). NULL for the 11 stores without a mapping — all
+          operational/internal.
+
+  - name: salesperson_bridge
+    description: >
+      SCD Type 2 bridge of "which store each salesperson code was in during each
+      period", 100% from SAP tables. Cross-domain building block reused by
+      sales (matching goal × actual by date), HR (trajectory), commission.
+
+      **Unit = code (SlpCode).** One code = one salesperson. The same person
+      with 2 codes (serving different stores) are 2 distinct salespeople — they
+      are not merged by name. The **salesperson's store is the one from the master,
+      not from the invoice**: a cross-store sale (billing through another store that
+      has the material) does not change their store.
+
+      **Store source = `OSLP.U_STORE` (master).** It is not the invoice's store
+      nor the goal allocation (that lives in `sales_goals.goal_store_code`).
+        - Baseline (1st load): each code enters with the current store from the master and
+          `valid_from` = date of the salesperson's 1st GOAL (by name, via
+          [[goal_name_entry]]), with a floor of 2025-01-01; with no registered goal
+          (manager/executive) it keeps the fallback 2025-10-01. `valid_to` = NULL.
+          Dating by the goal makes `valid_from` approximate the salesperson's ONBOARDING
+          (consumed by `dim_employees.hire_date`) and extends the resolution
+          of the code in `sales_goals` back to 2025 (the join is `date >= valid_from`).
+        - Forward (each incremental run): if the code's `U_STORE` changes, the
+          `pre_hook` closes the current version (valid_to = yesterday) and the SELECT inserts
+          the new one (valid_from = run date).
+
+      Pre-baseline history does not exist in SAP (there is no ASLP log table).
+      Assumption: the code is stable (a store change becomes a new code), so
+      "current store since the baseline" approximates the code's period well.
+
+      Grain: 1 row per (salesperson_code, store_code, valid_from).
+      Lookup key by date: `WHERE date BETWEEN valid_from AND COALESCE(valid_to, '9999-12-31')`.
+      To match against free text (e.g. the goal name), use `normalized_name`.
+    columns:
+      - name: salesperson_code
+        description: SlpCode from OSLP. Always populated (sentinels and non-salespeople filtered out).
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('employee')
+                field: employee_code
+      - name: salesperson_name
+        description: Salesperson name (SlpName from OSLP in the format 'Name - Store - Role').
+        tests:
+          - not_null
+      - name: normalized_name
+        description: >
+          Name normalized as a match key against free text — lowercase,
+          accent-insensitive, containing only the part before the first " - "
+          (without store or role). Used to link the goals spreadsheet
+          (`raw_sharepoint.metas_*.Vendedor`) to the bridge.
+        tests:
+          - not_null
+      - name: store_code
+        description: >
+          Canonical code of the salesperson's store (Code of @STORES = OSLP.U_STORE from
+          the master). It is the tie-breaker key for matching goal × actual.
+        tests:
+          - not_null
+      - name: store_name
+        description: >
+          Readable store label, derived from `store_code` via
+          [[standardized_store]] (new_store_name, falling back to old_store_name).
+      - name: store_text
+        description: >
+          Store fragment embedded in SlpName (e.g. "Loja Centro"). NOT
+          normalized, frequently out of date relative to the real operational
+          store. AUDIT only — the tie-break uses `store_code`.
+      - name: role
+        description: >
+          Informational attribute extracted from the name (e.g. "Vendedor", "Vendedora",
+          "Consultor de Franquias"). It does NOT enter the versioning key.
+      - name: valid_from
+        description: >
+          Start of the period (inclusive). At baseline = date of the salesperson's
+          1st goal by name (floor 2025-01-01; fallback 2025-10-01 for those with no
+          goal). On forward = run date. Dated by the goal to approximate the
+          salesperson's onboarding and extend the resolution of the code in sales_goals.
+        tests:
+          - not_null
+      - name: valid_to
+        description: >
+          End of the period (inclusive). NULL = current. Typical usage:
+          `WHERE date BETWEEN valid_from AND COALESCE(valid_to, '9999-12-31')`.
+      - name: source
+        description: "Store origin. Always 'sap_oslp' (master)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['sap_oslp']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [salesperson_code, store_code, valid_from]

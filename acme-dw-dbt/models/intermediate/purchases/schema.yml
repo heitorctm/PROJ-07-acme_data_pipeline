@@ -1,0 +1,422 @@
+version: 2
+
+models:
+  # =============================================================================
+  # Auxiliary building block — fiscal usage of inbound invoice
+  # =============================================================================
+
+  - name: purchases_fiscal_usage_invoice
+    description: >
+      Main fiscal usage of each inbound invoice — resolves `PCH12.MainUsage` by joining with `OUSG`.
+      Consumed by `purchases_invoice_lines`. Granularity: 1 record per doc_entry.
+
+      ## The concept of "fiscal usage" in SAP B1 Brazil
+
+      Every fiscal document needs a purpose classification — "Purchase", "Sales return",
+      "Internal transfer", "Use and consumption", "Fixed assets", etc. These codes live
+      in `OUSG` and are essential for tax assessment (ICMS/PIS/COFINS), tax credit
+      and mandatory fiscal reports (SPED, EFD).
+
+      ## Common usages at Acme on inbound invoices
+
+      | usage_id | Description |
+      |---:|---|
+      | 5 | Internal transfer (receipt from another branch) |
+      | 3 | Purchase of merchandise for resale |
+      | 19 | Purchase with ICMS ST |
+      | 38 | Fixed assets |
+      | 18 | Use and consumption |
+
+      Orders and requisitions have no fiscal extension — only invoices do.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the inbound invoice (FK to OPCH).
+        tests: [not_null, unique]
+      - name: main_usage_id
+        description: ID of the document's main fiscal usage (MainUsage from PCH12). References OUSG.
+      - name: main_usage_description
+        description: Text description of the fiscal usage, resolved via OUSG by main_usage_id.
+
+  # =============================================================================
+  # Building blocks by type — headers
+  # =============================================================================
+
+  - name: purchases_invoice_documents
+    description: >
+      Inbound invoice header (OPCH) enriched with supplier, branch and store.
+      Consumed by `purchases_fiscal_documents` via UNION ALL.
+      Granularity: one record per doc_entry.
+
+      OPCH in the current raw does not carry `user_id` or `creation_date` — they stay NULL in the canonical schema.
+
+      {{ doc('purchases_defensive_dedup') }}
+
+      {{ doc('purchases_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For invoices: 'nf-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Always `'invoice'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: DocEntry of the inbound invoice (FK to OPCH).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Invoice number (DocNum).
+      - name: issue_date
+        description: Invoice issue date (DocDate).
+      - name: accrual_date
+        description: Fiscal accrual date (TaxDate).
+      - name: due_date
+        description: Document due date (DocDueDate).
+      - name: creation_date
+        description: NULL for invoices (not extracted from OPCH).
+      - name: updated_date
+        description: Date of the record's last update in SAP (UpdateDate).
+      - name: document_status
+        description: "Document status (DocStatus). Values: 'O' (open), 'C' (closed)."
+      - name: canceled
+        description: "Cancellation flag (CANCELED). Values: 'yes', 'no'."
+      - name: supplier_code
+        description: Referential integrity validated against `int.partner`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('partner')
+                field: partner_code
+      - name: supplier_name
+        description: Supplier name (CardName from OCRD at the time of the invoice).
+      - name: group_code
+        description: Supplier group code (GroupCode).
+      - name: group_name
+        description: Supplier group name (resolved via OCRG).
+      - name: partner_show_in_bi
+        description: >
+          U_PARTNER_SHOW_IN_BI flag from OCRD propagated from the supplier.
+          'yes'/'no'. NULL on requisitions (req) — there is no supplier
+          assigned yet. Used by the canonical purchases BI filter.
+      - name: cpf_cnpj_official
+        description: Supplier's CPF or CNPJ (LicTradNum), without normalization.
+      - name: cpf_cnpj_normalized
+        description: Supplier's CPF/CNPJ without punctuation. Fallback `'SAP' + partner_code` when empty.
+      - name: branch_id
+        description: ID of the branch where the invoice was received (BPLId).
+      - name: branch_name
+        description: Branch name (resolved via OBPL).
+      - name: branch_nomenclature
+        description: Standardized branch nomenclature (`uf-cidade`).
+      - name: series_code
+        description: Fiscal numbering series code (Series from NFN1).
+      - name: series_number
+        description: Fiscal series number.
+      - name: payment_method
+        description: Payment method/terms (PymntGroup).
+      - name: ledger_transaction_id
+        description: ID of the journal entry generated by the invoice (TransId, FK to OJDT).
+      - name: user_id
+        description: NULL for invoices (not extracted from OPCH).
+      - name: user_login
+        description: User login in SAP (resolved via OUSR). NULL for invoices.
+      - name: user_name
+        description: User name (resolved via OUSR). NULL for invoices.
+      - name: store_code
+        description: Code of the store linked to the branch (@STORES via filial.U_STORE).
+      - name: store_name
+        description: Store name (resolved via @STORES).
+      - name: document_total
+        description: Invoice total amount (DocTotal).
+      - name: total_taxes
+        description: Sum of the invoice taxes (VatSum).
+      - name: gross_profit
+        description: Gross profit calculated for the invoice (GrosProfit).
+      - name: external_ticket
+        description: NULL for invoices.
+      - name: external_ticket_date
+        description: NULL for invoices.
+
+  - name: purchases_order_documents
+    description: >
+      Purchase order header (OPOR) enriched with supplier, branch and user.
+      Consumed by `purchases_fiscal_documents` via UNION ALL.
+      Granularity: one record per doc_entry.
+
+      OPOR has no `accrual_date`, `due_date`, series, payment method,
+      `ledger_transaction_id`, `store_code`, `total_taxes`, `gross_profit`, `external_ticket` —
+      all NULL in the canonical schema.
+
+      {{ doc('purchases_defensive_dedup') }}
+
+      {{ doc('purchases_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For orders: 'ped-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Always `'order'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['order'] } }
+      - name: doc_entry
+        description: DocEntry of the purchase order (FK to OPOR).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Purchase order number.
+
+  - name: purchases_requisition_documents
+    description: >
+      Purchase requisition header (OPRQ) enriched with branch and user.
+      Consumed by `purchases_fiscal_documents` via UNION ALL.
+      Granularity: one record per doc_entry.
+
+      OPRQ has no supplier assigned (only defined on the order) — all partner
+      fields come through NULL. It also has no totals, series, payment method, journal entry.
+      It has an exclusive `external_ticket` (reference to the external ticketing system).
+
+      {{ doc('purchases_defensive_dedup') }}
+
+      {{ doc('purchases_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For requisitions: 'req-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Always `'requisition'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['requisition'] } }
+      - name: doc_entry
+        description: DocEntry of the purchase requisition (FK to OPRQ).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Requisition number.
+      - name: external_ticket
+        description: Ticket code in the external ticketing system (U_externalTicket). Exclusive to requisitions.
+      - name: external_ticket_date
+        description: Date of the ticket in the external ticketing system. Exclusive to requisitions.
+
+  # =============================================================================
+  # Building blocks by type — lines
+  # =============================================================================
+
+  - name: purchases_invoice_lines
+    description: >
+      Inbound invoice lines (PCH1) enriched with fiscal usage and item hierarchy.
+      Consumed by `purchases_fiscal_lines` via UNION ALL.
+      Granularity: 1 record per (doc_entry, line_number).
+
+      Enrichments: `purchases_fiscal_usage_invoice`, `item`.
+
+      {{ doc('purchases_source_traceability') }}
+
+      {{ doc('purchases_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Always `'invoice'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: DocEntry of the inbound invoice (FK to OPCH).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number within the invoice (LineNum).
+        tests: [not_null]
+      - name: item_code
+        description: Purchased item (ItemCode).
+      - name: warehouse_code
+        description: Destination warehouse for the receipt (WhsCode).
+      - name: quantity
+        description: Received quantity (Quantity).
+      - name: open_quantity
+        description: NULL for invoices (order/requisition-only field).
+      - name: line_status
+        description: NULL for invoices (order/requisition-only field).
+      - name: unit_price
+        description: Unit price paid after discounts (Price).
+      - name: price_before_discount
+        description: Unit price before discount (PriceBefDi).
+      - name: discount_percentage
+        description: Discount percentage applied to the line (DiscPrcnt).
+      - name: line_total
+        description: Line total excluding taxes (LineTotal).
+      - name: total_taxes
+        description: Sum of the line taxes (VatSum + other taxes).
+      - name: inventory_cost_price
+        description: Item average cost at the time of receipt (StockPrice).
+      - name: ledger_account
+        description: Debit ledger account of the line (AcctCode).
+      - name: usage_id
+        description: Fiscal usage code of the line (Usage). References OUSG.
+      - name: source_doc_entry
+        description: DocEntry of the source document (BaseEntry) — points to the order or requisition.
+      - name: source_document_type
+        description: "Numeric type of the source document (BaseType). 22 = OPOR, 1470000113 = OPRQ, -1 = no source."
+      - name: main_usage_id
+        description: Header fiscal usage (from purchases_fiscal_usage_invoice).
+      - name: main_usage_description
+        description: Text description of the header fiscal usage.
+      - name: item_name
+        description: Item name (comes from `int.item`).
+      - name: family_code
+        description: Item family (hierarchy level 1, comes from `int.item`).
+      - name: family_name
+        description: Family text name.
+      - name: class_code
+        description: Item class (hierarchy level 2, comes from `int.item`).
+      - name: class_name
+        description: Class text name.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3, comes from `int.item`).
+      - name: sub_class_name
+        description: Sub-class text name.
+      - name: abc_curve
+        description: Item ABC curve (A/B/C — turnover classification).
+      - name: unit_of_measure
+        description: Item unit of measure (UN, KG, M, etc).
+      - name: manufacturer_code
+        description: Item manufacturer code.
+
+  - name: purchases_order_lines
+    description: >
+      Purchase order lines (POR1) enriched with item hierarchy.
+      Consumed by `purchases_fiscal_lines` via UNION ALL.
+      Granularity: 1 record per (doc_entry, line_number).
+
+      POR1 has no `price_before_discount`, `discount_percentage`, `total_taxes`,
+      `inventory_cost_price`, `ledger_account`, `usage_id` (orders are not fiscal) — NULL in the canonical schema.
+
+      {{ doc('purchases_source_traceability') }}
+
+      {{ doc('purchases_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Always `'order'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['order'] } }
+      - name: doc_entry
+        description: DocEntry of the purchase order (FK to OPOR).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number within the order (LineNum).
+        tests: [not_null]
+
+  - name: purchases_requisition_lines
+    description: >
+      Purchase requisition lines (PRQ1) enriched with item hierarchy.
+      Consumed by `purchases_fiscal_lines` via UNION ALL.
+      Granularity: 1 record per (doc_entry, line_number).
+
+      PRQ1 has no price, totals, taxes, `ledger_account`, `usage_id`, `source_doc_entry`
+      (the requisition is the start of the chain).
+
+      {{ doc('purchases_source_traceability') }}
+
+      {{ doc('purchases_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Always `'requisition'` here."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['requisition'] } }
+      - name: doc_entry
+        description: DocEntry of the purchase requisition (FK to OPRQ).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number within the requisition (LineNum).
+        tests: [not_null]
+
+  # =============================================================================
+  # Consolidated facts — pure UNION ALL of the building blocks by type
+  # =============================================================================
+
+  - name: purchases_fiscal_documents
+    description: >
+      Consolidated fact of purchases headers — **pure UNION ALL** of the building blocks by type
+      (`compras_nf/ped/req_documentos`). All type-specific logic (dedup, CASEs, enrichment
+      joins) lives in the building blocks.
+
+      Granularity: 1 record per (document_type, doc_entry). Global key on `document_id`.
+
+      {{ doc('purchases_document_cycle') }}
+
+      **For per-type analyses**, prefer consuming the building blocks directly
+      (`purchases_invoice_documents`, `purchases_order_documents`, `purchases_requisition_documents`). Use the
+      consolidated fact for requisition → order → invoice funnel analyses.
+
+      {{ doc('purchases_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Global surrogate key of the document (`document_type + '-' + doc_entry`). Unique across all types."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Document type discriminator. Values: `'invoice'`, `'order'`, `'requisition'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'order', 'requisition'] } }
+      - name: doc_entry
+        description: DocEntry — SAP internal key per document type (NOT unique across types).
+        tests: [not_null]
+
+  - name: purchases_fiscal_lines
+    description: >
+      Consolidated fact of purchases lines — **pure UNION ALL** of the building blocks by type
+      (`compras_nf/ped/req_linhas`). All type-specific logic (joins with fiscal usage,
+      item) lives in the building blocks.
+
+      Granularity: 1 record per (document_type, doc_entry, line_number).
+
+      {{ doc('purchases_document_cycle') }}
+
+      **For per-type analyses**, prefer consuming the building blocks directly. Use this
+      consolidated fact for requisition → order → invoice funnel analyses.
+
+      {{ doc('purchases_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - document_type
+              - doc_entry
+              - line_number
+    columns:
+      - name: document_type
+        description: "Document type discriminator. Values: `'invoice'`, `'order'`, `'requisition'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'order', 'requisition'] } }
+      - name: doc_entry
+        description: DocEntry — SAP internal key per document type (NOT unique across types).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number within the document (LineNum).
+        tests: [not_null]
+      - name: item_code
+        description: Referential integrity validated against `int.item`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Referential integrity validated against `int.warehouse`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code

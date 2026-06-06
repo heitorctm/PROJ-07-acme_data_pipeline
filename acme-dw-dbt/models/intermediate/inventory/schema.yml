@@ -1,0 +1,199 @@
+version: 2
+
+models:
+  - name: current_inventory
+    description: >
+      Current inventory by item × warehouse. Snapshot of OITW (Items Per Warehouse)
+      enriched with the item hierarchy (family, class, sub-class, ABC, unit) and the
+      warehouse hierarchy (branch, store, status).
+
+      Grain: 1 row per `(item_code, warehouse_code)`.
+
+      **Does not filter** — inactive warehouses are preserved (the `warehouse_inactive`
+      column lets the fact decide the appropriate filter).
+
+      Currently consumed by `mart_inventory.fact_inventory`.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [item_code, warehouse_code]
+    columns:
+      - name: item_code
+        description: Integrity validated against `int.item`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Integrity validated against `int.warehouse`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code
+      - name: inventory_quantity
+        description: '`OnHand` — physical quantity in inventory.'
+        tests: [not_null]
+      - name: committed_quantity
+        description: '`IsCommited` — quantity allocated to open sales orders.'
+        tests: [not_null]
+      - name: ordered_quantity
+        description: '`OnOrder` — quantity on open purchase orders.'
+        tests: [not_null]
+      - name: average_cost_price
+        description: '`AvgPrice` — current average cost of the item in that warehouse.'
+      - name: item_name
+        description: Item name (comes from `int.item`).
+      - name: family_code
+        description: Item family (hierarchy level 1, comes from `int.item`).
+      - name: family_name
+        description: Textual family name.
+      - name: class_code
+        description: Item class (hierarchy level 2, comes from `int.item`).
+      - name: class_name
+        description: Textual class name.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3, comes from `int.item`).
+      - name: sub_class_name
+        description: Textual sub-class name.
+      - name: abc_curve
+        description: Item ABC curve (A/B/C — turnover classification).
+      - name: unit_of_measure
+        description: Item unit of measure (UN, KG, M, etc).
+      - name: warehouse_name
+        description: Warehouse name (comes from `int.warehouse`).
+      - name: branch_id
+        description: ID of the branch linked to the warehouse.
+      - name: branch_name
+        description: Branch name.
+      - name: store_code
+        description: Code of the store linked to the warehouse (may be NULL for operational warehouses).
+      - name: store_name
+        description: Store name.
+      - name: warehouse_inactive
+        description: "Warehouse flag (comes from `int.warehouse.inactive`). Values: 'yes', 'no'."
+
+  - name: inventory_movements
+    description: >
+      Inventory movements (OINM / SAP B1 Inventory Audit Trail) enriched with the item and
+      warehouse hierarchies, an explicit movement sign, and a textual description of the
+      transaction type.
+
+      Grain: 1 row per `transaction_number` (the audit trail's natural PK, always
+      increasing — used as a watermark in case the materialization becomes incremental in
+      the future).
+
+      **Single source for reconstructing inventory balance + value at any past date.** The sum
+      of `movement_quantity` per (item, warehouse) matches `OITW.OnHand` 100% (validated over a
+      partial window).
+
+      Enrichments: `item` (hierarchy + flags), `warehouse` (branch + store).
+
+      The `transaction_type` translation follows the official SAP B1 docs; any new types that
+      appear fall back to `'tipo_' + cast(transaction_type as varchar)` — it does not break, it
+      just stays generic until the mapping is extended.
+    columns:
+      - name: transaction_number
+        description: Movement PK (OINM TransNum). Always increasing.
+        tests: [not_null, unique]
+      - name: movement_date
+        description: Movement date (OINM DocDate).
+        tests: [not_null]
+      - name: item_code
+        description: Referential integrity validated against `int.item`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Referential integrity validated against `int.warehouse`.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code
+      - name: inflow_quantity
+        description: Quantity that ENTERED the warehouse in this movement (InQty).
+      - name: outflow_quantity
+        description: Quantity that LEFT the warehouse in this movement (OutQty).
+      - name: movement_quantity
+        description: '`inflow_quantity - outflow_quantity`. Positive = net inflow; negative = net outflow.'
+      - name: transaction_amount
+        description: >
+          Financial value of the movement (TransValue). Positive on inflows, negative on outflows.
+          **Do not confuse it with the inventory balance value** — for the current inventory value
+          use `accumulated_quantity × calculated_average_price`.
+      - name: calculated_average_price
+        description: Average item price AFTER this movement (CalcPrice). Updated by SAP on each inflow.
+      - name: inventory_value_after_movement
+        description: >
+          Financial value of the item × warehouse inventory AFTER this movement (OINM Balance).
+          Calculated by SAP cumulatively since the operation opened — independent of the ingested
+          window, so it can be used directly without a cumulative sum starting from zero.
+          It will be the basis for reconstructing the historical balance when the daily inventory
+          fact is reactivated (out of current scope — today we only have a snapshot via [[fact_inventory]]).
+      - name: quantity_after_movement
+        description: >
+          Inventory quantity of the item × warehouse AFTER this movement. Derived as
+          `inventory_value_after_movement / calculated_average_price`. NULL when the average price = 0
+          (rare — revaluation movements with no quantity).
+      - name: movement_direction
+        description: "Movement sign: 'inflow', 'outflow', 'value_adjustment' (qty=0 and value≠0), 'mixed'."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['inflow', 'outflow', 'value_adjustment', 'mixed']
+      - name: transaction_type
+        description: Numeric code of the SAP B1 transaction type (TransType).
+        tests: [not_null]
+      - name: transaction_type_description
+        description: >
+          pt-BR slug of the transaction type. Mapping per the SAP B1 docs:
+          13=nf_venda, 14=devolucao_cliente, 15=entrega, 16=devolucao_entrega,
+          18=nf_compra, 19=devolucao_fornecedor, 20=recebimento_mercadoria,
+          21=devolucao_recebimento, 58=atualizacao_estoque, 59=entrada_manual,
+          60=saida_manual, 67=transferencia, 68=ordem_producao, 69=custos_importacao,
+          132=nf_correcao, 162=revalorizacao, 10000071=inventario_contagem,
+          310000001=saldo_inicial. Fallback `'tipo_' + cast(transaction_type as varchar)` for new ones.
+      - name: source_doc_entry
+        description: DocEntry of the document that originated the movement (CreatedBy).
+      - name: source_document_number
+        description: Textual reference of the source document (BASE_REF — usually DocNum).
+      - name: source_line_number
+        description: Line number within the source document (DocLineNum).
+      - name: item_name
+        description: Item name (comes from `int.item`).
+      - name: family_code
+        description: Item family (hierarchy level 1, comes from `int.item`).
+      - name: family_name
+        description: Textual family name.
+      - name: class_code
+        description: Item class (hierarchy level 2, comes from `int.item`).
+      - name: class_name
+        description: Textual class name.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3, comes from `int.item`).
+      - name: sub_class_name
+        description: Textual sub-class name.
+      - name: abc_curve
+        description: Item ABC curve.
+      - name: unit_of_measure
+        description: Item unit of measure.
+      - name: is_stockable
+        description: "'yes'/'no' flag indicating whether the item moves inventory (InvntItem)."
+      - name: warehouse_name
+        description: Warehouse name (comes from `int.warehouse`).
+      - name: branch_id
+        description: ID of the branch linked to the warehouse.
+      - name: branch_name
+        description: Branch name.
+      - name: store_code
+        description: Code of the store linked to the warehouse.
+      - name: store_name
+        description: Store name.

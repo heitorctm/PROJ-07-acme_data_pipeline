@@ -1,0 +1,152 @@
+version: 2
+
+models:
+  - name: finance_journal_entries
+    description: >
+      Journal entry lines (JDT1) consolidated with the header (OJDT) and enriched with
+      the chart of accounts (debit account and offset account) and partner.
+
+      Use this model as the base for accounting analysis: general ledger, trial balance,
+      cash flow, and traceability of entries by source document (TransType +
+      BaseRef reference the invoice/payment that generated the transaction).
+
+      Granularity: one line per (transaction_id, line_number).
+      Volume: ~3.3 million lines across ~700 thousand transactions.
+
+      The `partner_code` field comes from JDT1.ShortName and can reference either a BP (customer/supplier)
+      or a ledger account code — when it is an account, the LEFT JOIN with partner returns NULL.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - transaction_id
+              - line_number
+      # note: the accounting invariant "each line is debit OR credit, never both"
+      # was implemented as a singular test in
+      # tests/financeiro_lancamentos_debito_xor_credito.sql because
+      # dbt_utils.expression_is_true compiles to `select 1 ...`, which dbt-sqlserver
+      # cannot wrap in a view (adapter bug).
+    columns:
+      - name: transaction_id
+        description: Journal entry transaction ID (TransId). References OJDT.
+        tests:
+          - not_null
+      - name: line_number
+        description: Sequential journal entry line number (Line_ID).
+        tests:
+          - not_null
+      - name: reference_date
+        description: Reference date of the entry (RefDate from OJDT).
+      - name: transaction_type
+        description: >
+          Numeric transaction type code (TransType from OJDT). Indicates which SAP document generated
+          the transaction. Common values: 13 = OINV (outbound invoice), 14 = ORIN (credit memo), 18 = OPCH (inbound invoice),
+          30 = OJDT (manual), 46 = OVPM (outgoing payment), 24 = ORCT (incoming payment).
+      - name: historical
+        description: Entry memo/historical text (Memo from OJDT) in lowercase.
+      - name: document_reference
+        description: External document reference (BaseRef from OJDT) — number of the originating invoice or payment.
+      - name: ledger_account
+        description: Debit/credit ledger account for this line (Account from JDT1). References OACT.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('chart_of_accounts_oact')
+                field: account_code
+      - name: account_name
+        description: Ledger account name, resolved via OACT.
+      - name: offset_account
+        description: >
+          Offset ledger account (ContraAct from JDT1).
+          Polymorphic column — can store either `account_code` (chart_of_accounts_oact) OR
+          `partner_code` (partner) depending on the entry type (account-to-account
+          vs account-to-BP). Integrity validated via the singular test
+          `tests/financeiro_lancamentos_conta_contrapartida_referencia.sql`.
+      - name: offset_account_name
+        description: Offset account name, resolved via OACT.
+      - name: debit
+        description: Amount posted as debit.
+      - name: credit
+        description: Amount posted as credit.
+      - name: partner_code
+        description: >
+          Business partner code (ShortName from JDT1). Populated only when the line
+          references a BP — for pure ledger accounts it holds the account code (and the join with partner returns NULL).
+      - name: partner_name
+        description: Partner name (CardName from OCRD via partner). NULL when partner_code is not a BP.
+      - name: partner_type
+        description: "Partner type. Values: 'customer', 'supplier', 'lead', NULL."
+      - name: group_code
+        description: Partner group code.
+      - name: group_name
+        description: Partner group name.
+
+  - name: finance_payments
+    description: >
+      Outgoing payments (OVPM) enriched with partner and branch, broken down by
+      payment method (cash, transfer, check, credit) in addition to the total.
+
+      Use this model as the base for analysis of settled accounts payable, payment method
+      mix, supplier performance, and reconciliation with journal entries (via
+      `ledger_transaction_id` → OJDT).
+
+      Granularity: one record per doc_entry — most recent version (defensive dedup).
+      Volume: ~66 thousand payments.
+    columns:
+      - name: doc_entry
+        description: Internal SAP key of the payment (DocEntry).
+        tests:
+          - not_null
+          - unique
+      - name: payment_number
+        description: User-facing payment number (DocNum).
+      - name: payment_type
+        description: "Payment type (translated DocType). Values: 'account' (A), 'customer' (C), 'supplier' (S)."
+      - name: payment_date
+        description: Payment posting date (DocDate).
+      - name: accrual_date
+        description: Tax/accrual date (TaxDate).
+      - name: due_date
+        description: Effective payment date / value date (DocDueDate).
+      - name: updated_date
+        description: Last update date (UpdateDate).
+      - name: canceled
+        description: "Cancellation status. Values: 'no' (active), 'canceled' (voided), 'reversal'."
+      - name: partner_code
+        description: Recipient partner code (CardCode).
+      - name: partner_name
+        description: Partner name, from partner (CardName from OCRD).
+      - name: partner_type
+        description: "Type. Values: 'customer', 'supplier', 'lead'."
+      - name: group_code
+        description: Partner group code.
+      - name: group_name
+        description: Partner group name.
+      - name: cpf_cnpj_official
+        description: CPF/CNPJ without normalization.
+      - name: cpf_cnpj_normalized
+        description: CPF/CNPJ without punctuation.
+      - name: branch_id
+        description: ID of the branch that made the payment (BPLId).
+      - name: branch_name
+        description: Branch name, from branch_obpl.
+      - name: branch_nomenclature
+        description: Internal branch nomenclature.
+      - name: payment_total
+        description: Total payment amount (DocTotal).
+      - name: currency
+        description: Document currency (DocCurr).
+      - name: cash_amount
+        description: Cash portion (CashSum).
+      - name: transfer_amount
+        description: Bank transfer portion (TrsfrSum).
+      - name: check_amount
+        description: Check portion (CheckSum).
+      - name: credit_amount
+        description: Credit portion (CreditSum).
+      - name: amount_without_document
+        description: Portion without an associated document (NoDocSum).
+      - name: ledger_transaction_id
+        description: ID of the corresponding journal entry (TransId) — join with OJDT/finance_journal_entries.
+      - name: historical
+        description: Entry historical text (JrnlMemo) in lowercase.

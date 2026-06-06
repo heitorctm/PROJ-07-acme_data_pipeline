@@ -1,0 +1,130 @@
+version: 2
+
+models:
+  - name: purchase_invoice_opch
+    description: Header of inbound invoices (A/P Invoice). One record per invoice received.
+    columns:
+      - name: doc_entry
+        description: SAP internal primary key. May appear multiple times — the table uses an incremental_append strategy in raw, which keeps the document's version history.
+        tests:
+          - not_null
+
+  - name: purchase_invoice_lines_pch1
+    description: Inbound invoice lines. Composite key doc_entry + line_number.
+    columns:
+      - name: doc_entry
+        description: Foreign key to OPCH.
+        tests:
+          - not_null
+      - name: line_number
+        description: Sequential line number within the inbound invoice.
+        tests:
+          - not_null
+      - name: item_code
+        description: Code of the item received.
+      - name: warehouse_code
+        description: Code of the destination warehouse for the goods.
+      - name: ledger_account
+        description: Debit ledger account of the line (AcctCode).
+      - name: usage_id
+        description: ID of the line's fiscal usage (Usage), references OUSG.
+      - name: quantity
+        description: Quantity received.
+      - name: unit_price
+        description: Unit price charged.
+      - name: price_before_discount
+        description: Unit price before discount.
+      - name: discount_percentage
+        description: Line discount percentage.
+      - name: line_total
+        description: Line total amount (LineTotal).
+      - name: total_taxes
+        description: Total line taxes (VatSum).
+      - name: inventory_cost_price
+        description: Inventory cost price at the time of posting (INMPrice).
+      - name: source_doc_entry
+        description: doc_entry of the source document (BaseEntry) — points to OPOR when populated.
+      - name: source_document_type
+        description: "Numeric type of the source document (BaseType). Known values: 22 = OPOR (purchase order), 18 = OPCH (another inbound invoice — supplementary invoice/retransmission), -1 = no source."
+      - name: _ingested_at
+        description: Timestamp of when the record was ingested into the data warehouse.
+
+  - name: purchase_invoice_installments_pch6
+    description: Inbound invoice installments. Composite key doc_entry + installment_number.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the inbound invoice (FK to OPCH).
+        tests:
+          - not_null
+      - name: installment_number
+        description: Sequential installment number within the invoice.
+        tests:
+          - not_null
+
+  - name: purchase_invoice_usage_pch12
+    description: Fiscal usage of inbound invoices.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the inbound invoice (FK to OPCH).
+        tests:
+          - not_null
+
+  - name: purchase_order_opor
+    description: Header of purchase orders (Purchase Order). One record per order.
+    columns:
+      - name: doc_entry
+        description: SAP internal primary key. May appear multiple times — the table uses an incremental_append strategy in raw, which keeps the document's version history.
+        tests:
+          - not_null
+
+  - name: purchase_order_lines_por1
+    description: Purchase order lines. Composite key doc_entry + line_number.
+    columns:
+      - name: doc_entry
+        description: Foreign key to OPOR.
+        tests:
+          - not_null
+      - name: line_number
+        description: Sequential line number within the purchase order.
+        tests:
+          - not_null
+      - name: item_code
+        description: Code of the item ordered.
+      - name: warehouse_code
+        description: Code of the destination warehouse.
+      - name: quantity
+        description: Quantity ordered.
+      - name: open_quantity
+        description: Quantity not yet received (OpenQty). Useful for delivery-backlog metrics.
+      - name: line_status
+        description: "Line status (LineStatus). Values: 'O' (open), 'C' (closed)."
+      - name: unit_price
+        description: Unit price negotiated with the supplier.
+      - name: line_total
+        description: Line total amount (LineTotal).
+      - name: source_doc_entry
+        description: doc_entry of the source document (BaseEntry) — points to OPRQ when populated.
+      - name: source_document_type
+        description: "Numeric type of the source document (BaseType). Known values: 1470000113 = OPRQ (requisition), 22 = OPOR (another purchase order — copy/duplication), -1 = no source."
+      - name: _ingested_at
+        description: Timestamp of when the record was ingested into the data warehouse.
+
+  - name: purchase_requisition_oprq
+    description: Header of purchase requisitions (Purchase Request). One record per requisition.
+    columns:
+      - name: doc_entry
+        description: SAP internal primary key. May appear multiple times — the table uses an incremental_append strategy in raw, which keeps the document's version history.
+        tests:
+          - not_null
+
+  - name: purchase_requisition_lines_prq1
+    description: Purchase requisition lines. Composite key doc_entry + line_number.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the purchase requisition (FK to OPRQ).
+        tests:
+          - not_null
+      - name: line_number
+        description: Sequential line number within the requisition.
+        tests:
+          - not_null

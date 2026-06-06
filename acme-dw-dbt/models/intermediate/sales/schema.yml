@@ -1,0 +1,1006 @@
+version: 2
+
+models:
+  # =============================================================================
+  # Auxiliary building blocks — prices and fiscal usage by source
+  # =============================================================================
+
+  - name: sales_prices_invoice
+    description: >
+      BDI and cost prices per outbound invoice line, normalized to decimal.
+      Consumed by `sales_invoice_lines`. Grain: 1 record per (doc_entry, line_number).
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: doc_entry
+        description: Invoice document key (references OINV.doc_entry).
+        tests: [not_null]
+      - name: line_number
+        description: Line number within the document.
+        tests: [not_null]
+      - name: line_key
+        description: Concatenated doc_entry/line_number key.
+        tests: [not_null, unique]
+      - name: bdi_price
+        description: >
+          BDI price (Base de Desconto Interno) per unit — internal list price used as the basis
+          for margin calculation. SAP field U_BDI_PRICE, normalized to decimal in staging.
+      - name: cost_price
+        description: Cost price per unit. SAP field U_COST_PRICE, normalized to decimal.
+
+  - name: sales_prices_quote
+    description: >
+      BDI and cost prices per quote line, normalized to decimal.
+      Consumed by `sales_quote_lines`. Grain: 1 record per (doc_entry, line_number).
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: doc_entry
+        description: Quote document key (references OQUT.doc_entry).
+        tests: [not_null]
+      - name: line_number
+        description: Line number within the document.
+        tests: [not_null]
+      - name: line_key
+        description: Concatenated doc_entry/line_number key.
+        tests: [not_null, unique]
+      - name: bdi_price
+        description: BDI price per unit (U_BDI_PRICE normalized to decimal).
+      - name: cost_price
+        description: Cost price per unit (U_COST_PRICE normalized to decimal).
+
+  - name: sales_prices_return
+    description: >
+      BDI and cost prices per return line, normalized to decimal.
+      Consumed by `sales_return_lines`. Grain: 1 record per (doc_entry, line_number).
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: doc_entry
+        description: Return document key (references ORIN.doc_entry).
+        tests: [not_null]
+      - name: line_number
+        description: Line number within the document.
+        tests: [not_null]
+      - name: line_key
+        description: Concatenated doc_entry/line_number key.
+        tests: [not_null, unique]
+      - name: bdi_price
+        description: BDI price per unit (U_BDI_PRICE normalized to decimal).
+      - name: cost_price
+        description: Cost price per unit (U_COST_PRICE normalized to decimal).
+
+  - name: sales_fiscal_usage_invoice
+    description: >
+      Main fiscal usage of each outbound invoice — resolves `INV12.MainUsage` by joining with `OUSG`.
+      Consumed by `sales_invoice_lines`. Grain: 1 record per doc_entry.
+
+      {{ doc('sales_fiscal_usage_concept') }}
+
+      **Specific coverage:** ~36% of invoices in raw have `MainUsage = NULL`.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the outbound invoice (FK to OINV).
+        tests: [not_null, unique]
+      - name: main_usage_id
+        description: ID of the document's main fiscal usage (MainUsage from INV12). References OUSG.
+      - name: main_usage_description
+        description: Textual description of the fiscal usage, resolved via OUSG.
+
+  - name: sales_fiscal_usage_quote
+    description: >
+      Main fiscal usage of each quote — resolves `QUT12.MainUsage` by joining with `OUSG`.
+      Consumed by `sales_quote_lines`. Grain: 1 record per doc_entry.
+
+      {{ doc('sales_fiscal_usage_concept') }}
+
+      **Specific coverage:** ~95% of quotes in raw have `MainUsage = NULL` —
+      quotes are preliminary and frequently lack a defined fiscal classification.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the quote (FK to OQUT).
+        tests: [not_null, unique]
+      - name: main_usage_id
+        description: ID of the document's main fiscal usage (MainUsage from QUT12). References OUSG.
+      - name: main_usage_description
+        description: Textual description of the fiscal usage, resolved via OUSG.
+
+  - name: sales_fiscal_usage_return
+    description: >
+      Main fiscal usage of each return — resolves `RIN12.MainUsage` by joining with `OUSG`.
+      Consumed by `sales_return_lines`. Grain: 1 record per doc_entry.
+
+      {{ doc('sales_fiscal_usage_concept') }}
+
+      **Specific coverage:** only ~15% of returns have `MainUsage = NULL` —
+      returns are well classified for fiscal purposes (reversal operations require traceability).
+    columns:
+      - name: doc_entry
+        description: DocEntry of the return (FK to ORIN).
+        tests: [not_null, unique]
+      - name: main_usage_id
+        description: ID of the document's main fiscal usage (MainUsage from RIN12). References OUSG.
+      - name: main_usage_description
+        description: Textual description of the fiscal usage, resolved via OUSG.
+
+  - name: sales_store_salesperson
+    description: >
+      Salesperson enriched with the store they are linked to.
+      Each salesperson in SAP has a custom field U_STORE that points to @STORES.
+      Use it as a salesperson dimension in analyses that need to know which store the salesperson
+      represents — useful when the document does not declare the store directly.
+      Grain: 1 record per salesperson_code.
+    columns:
+      - name: salesperson_code
+        description: Salesperson code (SlpCode from OSLP).
+        tests: [not_null, unique]
+      - name: salesperson_name
+        description: Salesperson name (SlpName from OSLP).
+      - name: salesperson_store_code
+        description: Code of the store linked to the salesperson (U_STORE from OSLP).
+      - name: salesperson_store_name
+        description: Name of the salesperson's store, resolved via @STORES.
+
+  # =============================================================================
+  # Per-type building blocks — headers
+  # =============================================================================
+
+  - name: sales_invoice_documents
+    description: >
+      Outbound invoice header (OINV) enriched with partner, salesperson, branch and store.
+      Consumed by `sales_fiscal_documents` via UNION ALL.
+      Grain: one record per doc_entry.
+
+      {{ doc('sales_defensive_dedup') }}
+
+      {{ doc('sales_header_enum_translation') }}
+
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For invoice: 'nf-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Constant discriminator 'invoice'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: Internal document key in SAP (DocEntry of OINV).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Invoice number (DocNum).
+      - name: issue_date
+        description: Document issue date (DocDate).
+      - name: accrual_date
+        description: Fiscal accrual date (TaxDate).
+      - name: expected_delivery_date
+        description: NULL for invoices (order-only field — kept in the schema to align the UNION).
+      - name: creation_date
+        description: Date the record was created in SAP (CreateDate).
+      - name: updated_date
+        description: Date of the record's last update (UpdateDate).
+      - name: document_status
+        description: "Document status (DocStatus). Values: 'O' (open), 'C' (closed)."
+      - name: canceled
+        description: "Cancellation flag. Values: 'yes', 'no'."
+      - name: customer_code
+        description: Customer code (CardCode → OCRD).
+      - name: partner_name
+        description: Customer name at the time of the invoice.
+      - name: partner_type
+        description: "Partner type. Values: 'customer', 'supplier', 'lead'."
+      - name: group_code
+        description: "Relevant groups: 107/108 = franchise, 111 = intercompany (except branch 9)."
+      - name: group_name
+        description: Partner group name.
+      - name: franchise_name
+        description: Name of the franchise associated with the partner (U_franchiseName).
+      - name: cpf_cnpj_official
+        description: Partner CPF/CNPJ (LicTradNum), without normalization.
+      - name: cpf_cnpj_normalized
+        description: Partner CPF/CNPJ without punctuation. Fallback `'SAP' + partner_code` when empty.
+      - name: partner_show_in_bi
+        description: "Partner BI visibility flag ('yes'/'no'). The canonical filter requires 'yes' — except for the global override document_show_in_bi='yes' (force display), which bypasses this and the other filters."
+      - name: salesperson_code
+        description: Code of the responsible salesperson (SlpCode → OSLP).
+      - name: salesperson_name
+        description: Salesperson name at the time of the invoice (resolved via OSLP).
+      - name: salesperson_store_code
+        description: Code of the salesperson's store (U_STORE from OSLP).
+      - name: salesperson_store_name
+        description: Name of the salesperson's store (resolved via @STORES).
+      - name: branch_id
+        description: Issuing branch ID (BPLId). Branch 9 = "contribution" (exception to the intercompany rule).
+      - name: branch_name
+        description: Branch name.
+      - name: branch_nomenclature
+        description: Standardized branch nomenclature (`uf-cidade`).
+      - name: store_code
+        description: Code of the document's store (U_Store from OINV).
+      - name: document_store_name
+        description: Name of the document's store (resolved via @STORES).
+      - name: display_store_name
+        description: "Cascade: document store (U_Store) → salesperson's store."
+      - name: series_code
+        description: Fiscal numbering series code (Series).
+      - name: series_number
+        description: Fiscal series number.
+      - name: payment_method
+        description: Payment method/terms (PymntGroup).
+      - name: ledger_transaction_id
+        description: Ledger transaction ID (TransId → OJDT).
+      - name: document_total
+        description: Total invoice amount including freight (DocTotal).
+      - name: gross_profit
+        description: Calculated gross profit of the invoice (GrosProfit).
+      - name: header_discount
+        description: Discount applied at the header level (DiscSum).
+      - name: total_taxes
+        description: Sum of the invoice's taxes (VatSum).
+      - name: freight_amount
+        description: >
+          Freight charged to the customer on this document (aggregated from INV3 with
+          ExpnsCode = 1, via [[sales_freight_document]]). Zero for documents
+          with no additional expenses recorded. Replicates the rule of the V3
+          (vw_ranking_vendas_legada).
+      - name: presale_channel
+        description: "Cascade: document channel → partner channel."
+      - name: load_kit
+        description: >
+          Document load classification (U_LOAD_KIT from OINV). Values:
+          'retail' (N), 'wholesale' (S), 'unclassified' (P — pending, SAP default
+          when the salesperson does not fill it in). 'unclassified' indicates a
+          data-entry gap to be fixed at the source, not NULL.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['retail', 'wholesale', 'unclassified']
+      - name: finance_validated
+        description: "U_FINANCE_OK flag ('yes'/'no'). Indicates whether finance approved the document."
+      - name: document_show_in_bi
+        description: "Document U_SHOW_IN_BI flag ('yes'/'no'). 'Force display' (default 'no' = neutral, does NOT hide). It is a GLOBAL OVERRIDE in the BI filter: document_show_in_bi='yes' makes the document enter regardless of partner/intercompany/fiscal usage/canceled (applied in the fact's WHERE, not in the visibility macro)."
+      - name: triangulation
+        description: >
+          Triangular fiscal operation classification (U_TRIANGULATION). Translated values:
+          'to confirm', 'yes', 'no'. **Not filtered** — exposed as an attribute. 85% of
+          invoices are 'to confirm' (operational default state, not a real pending issue)
+          and the legacy view vw_ranking_vendas_legada also does not filter on this. NULL for
+          types without triangulation (quote, return, order) in the consolidated fact.
+        tests:
+          - accepted_values: { arguments: { values: ['no', 'yes', 'to confirm'] } }
+
+  - name: sales_quote_documents
+    description: >
+      Quote header (OQUT) enriched with partner, salesperson, branch and store.
+      Consumed by `sales_fiscal_documents` via UNION ALL.
+      Grain: one record per doc_entry.
+
+      OQUT does not carry `accrual_date`, `series_number`, `ledger_transaction_id`, `presale_channel`,
+      `finance_validated`, `show_in_bi` — they stay NULL in the canonical schema.
+
+      {{ doc('sales_defensive_dedup') }}
+
+      {{ doc('sales_header_enum_translation') }}
+
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For quote: 'orc-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Here always `'quote'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['quote'] } }
+      - name: doc_entry
+        description: DocEntry of the quote (FK to OQUT).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Quote number.
+
+  - name: sales_return_documents
+    description: >
+      Outbound invoice return header (ORIN) enriched with partner, salesperson, branch and store.
+      Consumed by `sales_fiscal_documents` via UNION ALL.
+      Grain: one record per doc_entry.
+
+      ORIN does not carry `accrual_date` nor `ledger_transaction_id` — they stay NULL in the canonical schema.
+
+      {{ doc('sales_defensive_dedup') }}
+
+      {{ doc('sales_header_enum_translation') }}
+
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For return: 'dev-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Here always `'return'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['return'] } }
+      - name: doc_entry
+        description: DocEntry of the return (FK to ORIN).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Return number.
+
+  - name: sales_order_documents
+    description: >
+      Sales order header (ORDR) enriched with partner, salesperson and branch.
+      Consumed by `sales_fiscal_documents` via UNION ALL.
+      Grain: one record per doc_entry.
+
+      **Exclusive attribute:** `expected_delivery_date` (DocDueDate from ORDR).
+
+      **Attributes missing in the current raw:** ORDR does not carry `series_code`, `series_number`,
+      `payment_method`, `ledger_transaction_id`, `header_discount`, `store_code`,
+      `load_kit`, `presale_channel`, `finance_validated`, `show_in_bi`. Several exist in
+      the original SAP but were not extracted by the upstream pipeline.
+
+      {{ doc('sales_defensive_dedup') }}
+
+      {{ doc('sales_header_enum_translation') }}
+
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Surrogate key. For order: 'ped-' + doc_entry."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Type discriminator. Here always `'order'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['order'] } }
+      - name: doc_entry
+        description: DocEntry of the sales order (FK to ORDR).
+        tests: [not_null, unique]
+      - name: document_number
+        description: Order number.
+      - name: expected_delivery_date
+        description: Expected delivery date (DocDueDate). Populated only in this building block.
+
+  # =============================================================================
+  # Per-type building blocks — lines
+  # =============================================================================
+
+  - name: sales_invoice_lines
+    description: >
+      Outbound invoice lines (INV1) enriched with prices, fiscal usage and item hierarchy.
+      Consumed by `sales_fiscal_lines` via UNION ALL.
+      Grain: 1 record per (doc_entry, line_number).
+
+      Enrichments: `sales_prices_invoice`, `sales_fiscal_usage_invoice`, `item`.
+
+      {{ doc('sales_source_traceability') }}
+
+      {{ doc('sales_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Here always `'invoice'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: DocEntry of the outbound invoice (FK to OINV).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number on the invoice (LineNum).
+        tests: [not_null]
+      - name: item_code
+        description: Item sold (ItemCode → OITM).
+      - name: item_description
+        description: Item description at the time of the invoice (Dscription from INV1, may differ from the master record).
+      - name: quantity
+        description: Quantity sold (Quantity).
+      - name: open_quantity
+        description: NULL on this invoice (order-only field — kept in the schema to align the UNION).
+      - name: unit_price
+        description: Unit price charged after discounts (Price).
+      - name: price_before_discount
+        description: Unit price before discount (PriceBefDi).
+      - name: discount_percentage
+        description: Discount percentage applied on the line (DiscPrcnt).
+      - name: line_total
+        description: Line total without taxes (LineTotal).
+      - name: total_taxes
+        description: Sum of the line's taxes (VatSum + other taxes).
+      - name: inventory_cost_price
+        description: Item cost price according to inventory (INMPrice).
+      - name: line_status
+        description: "Line status (LineStatus). Values: 'O' (open), 'C' (closed)."
+      - name: usage_id
+        description: Line fiscal usage code (Usage). References OUSG.
+      - name: cfop
+        description: Fiscal Code of Operations and Services (CFOP) of the line (Code from U_DFE_NCFOP).
+      - name: warehouse_code
+        description: Source warehouse of the sale (WhsCode).
+      - name: source_doc_entry
+        description: DocEntry of the source document (BaseEntry) — points to the order/quote.
+      - name: source_line_number
+        description: NULL (BaseLine exists in SAP but is not in staging).
+      - name: effective_source_doc_entry
+        description: NULL for invoices (return-only field).
+      - name: source_document_type
+        description: "Numeric type of the source document (BaseType). 17 = ORDR (order), 23 = OQUT (quote), 13 = OINV (supplementary invoice)."
+      - name: doc_entry_sales_invoice
+        description: NULL for invoices (order-only field).
+      - name: bdi_price
+        description: Line BDI price (comes from `sales_prices_invoice`).
+      - name: cost_price
+        description: Line cost price (comes from `sales_prices_invoice`).
+      - name: margin
+        description: Margin reported on the line (U_MARGIN).
+      - name: main_usage_id
+        description: Header fiscal usage (from sales_fiscal_usage_invoice).
+      - name: main_usage_description
+        description: Textual description of the header fiscal usage.
+      - name: item_name
+        description: Item name (comes from `int.item`).
+      - name: family_code
+        description: Item family (hierarchy level 1, comes from `int.item`).
+      - name: family_name
+        description: Textual family name.
+      - name: class_code
+        description: Item class (hierarchy level 2, comes from `int.item`).
+      - name: class_name
+        description: Textual class name.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3, comes from `int.item`).
+      - name: sub_class_name
+        description: Textual sub-class name.
+      - name: abc_curve
+        description: ABC curve of the item (A/B/C — turnover classification).
+      - name: unit_of_measure
+        description: Item unit of measure.
+      - name: manufacturer_code
+        description: Item manufacturer code.
+
+  - name: sales_quote_lines
+    description: >
+      Quote lines (QUT1) enriched with prices, fiscal usage and item hierarchy.
+      Consumed by `sales_fiscal_lines` via UNION ALL.
+      Grain: 1 record per (doc_entry, line_number).
+
+      Enrichments: `sales_prices_quote`, `sales_fiscal_usage_quote`, `item`.
+
+      {{ doc('sales_source_traceability') }}
+
+      {{ doc('sales_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Here always `'quote'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['quote'] } }
+      - name: doc_entry
+        description: DocEntry of the quote (FK to OQUT).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number on the quote (LineNum).
+        tests: [not_null]
+
+  - name: sales_return_lines
+    description: >
+      Return lines (RIN1) enriched with prices, fiscal usage and item hierarchy.
+      Consumed by `sales_fiscal_lines` via UNION ALL.
+      Grain: 1 record per (doc_entry, line_number).
+
+      **Exclusive attribute:** `effective_source_doc_entry` (ActBaseEnt from RIN1) — DocEntry of the
+      original invoice that was returned.
+
+      {{ doc('sales_source_traceability') }}
+
+      {{ doc('sales_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Here always `'return'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['return'] } }
+      - name: doc_entry
+        description: DocEntry of the return (FK to ORIN).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number on the return (LineNum).
+        tests: [not_null]
+      - name: effective_source_doc_entry
+        description: DocEntry of the original invoice that was returned (ActBaseEnt). Return-exclusive.
+
+  - name: sales_order_lines
+    description: >
+      Sales order lines (RDR1) enriched with item hierarchy.
+      Consumed by `sales_fiscal_lines` via UNION ALL.
+      Grain: 1 record per (doc_entry, line_number).
+
+      **Exclusive attributes:** `open_quantity` (OpenQty), `source_line_number` (BaseLine),
+      `doc_entry_sales_invoice` (TrgetEntry — invoice generated from this line).
+
+      **NULL attributes (missing in raw RDR1):** `price_before_discount`, `discount_percentage`,
+      `total_taxes`, `inventory_cost_price`, `bdi_price`, `cost_price`, `margin`,
+      `usage_id`, `cfop`, `main_usage_id`, `main_usage_description`.
+      An order is not fiscal (no CFOP/fiscal usage by SAP B1 design) and the upstream pipeline did not
+      extract the U_* fields from RDR1.
+
+      {{ doc('sales_source_traceability') }}
+
+      {{ doc('sales_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: document_type
+        description: "Type discriminator. Here always `'order'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['order'] } }
+      - name: doc_entry
+        description: DocEntry of the sales order (FK to ORDR).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number on the order (LineNum).
+        tests: [not_null]
+      - name: open_quantity
+        description: Quantity not yet invoiced (OpenQty). Order-exclusive.
+      - name: source_line_number
+        description: Line number in the source document (BaseLine). Order-exclusive.
+      - name: doc_entry_sales_invoice
+        description: DocEntry of the invoice generated from this line (TrgetEntry → OINV). Order-exclusive.
+
+  # =============================================================================
+  # Consolidated facts — pure UNION ALL of the per-type building blocks
+  # =============================================================================
+
+  - name: sales_fiscal_documents
+    description: >
+      Consolidated fact of commercial sales headers — **pure UNION ALL** of the per-type building
+      blocks (`vendas_nf/orc/dev/ped_documentos`). All type-specific logic (dedup, CASEs,
+      enriching joins) lives in the building blocks. Here it only consolidates.
+
+      Grain: 1 record per (document_type, doc_entry). Global key in `document_id`.
+
+      {{ doc('sales_document_type_discriminator') }}
+
+      **For per-type analyses**, prefer consuming the building blocks directly (cheaper and more
+      focused): `sales_invoice_documents`, `sales_quote_documents`, `sales_return_documents`,
+      `sales_order_documents`. Use this consolidated fact when you need to compare across types
+      in the same report (e.g. quote → order → invoice funnel).
+
+      {{ doc('sales_filter_policy') }}
+    columns:
+      - name: document_id
+        description: "Global surrogate key (`document_type + '-' + doc_entry`). Unique across all types."
+        tests: [not_null, unique]
+      - name: document_type
+        description: "Document type discriminator. Values: `'invoice'`, `'quote'`, `'return'`, `'order'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'quote', 'return', 'order'] } }
+      - name: doc_entry
+        description: DocEntry — internal SAP key per document type (NOT unique across types).
+        tests: [not_null]
+      - name: customer_code
+        description: Referential integrity validated against `int.partner`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('partner')
+                field: partner_code
+              config:
+                severity: warn
+      - name: salesperson_code
+        description: Referential integrity validated against `sales_store_salesperson`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('sales_store_salesperson')
+                field: salesperson_code
+      - name: branch_id
+        description: Referential integrity validated against `stg.branch_obpl`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('branch_obpl')
+                field: branch_id
+
+  - name: sales_fiscal_lines
+    description: >
+      Consolidated fact of commercial sales lines — **pure UNION ALL** of the per-type building blocks
+      (`vendas_nf/orc/dev/ped_linhas`). All type-specific logic (joins with prices, fiscal
+      usage, item) lives in the building blocks.
+
+      Grain: 1 record per (document_type, doc_entry, line_number).
+
+      {{ doc('sales_document_type_discriminator') }}
+
+      **For per-type analyses**, prefer consuming the building blocks directly. Use this consolidated
+      fact for cross-type comparisons.
+
+      {{ doc('sales_filter_policy') }}
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - document_type
+              - doc_entry
+              - line_number
+    columns:
+      - name: document_type
+        description: "Document type discriminator. Values: `'invoice'`, `'quote'`, `'return'`, `'order'`."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'quote', 'return', 'order'] } }
+      - name: doc_entry
+        description: DocEntry — internal SAP key per document type (NOT unique across types).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number within the document (LineNum).
+        tests: [not_null]
+      - name: item_code
+        description: Referential integrity validated against `int.item`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('item')
+                field: item_code
+      - name: warehouse_code
+        description: Referential integrity validated against `int.warehouse`.
+        tests:
+          - relationships:
+              arguments:
+                to: ref('warehouse')
+                field: warehouse_code
+
+  # =============================================================================
+  # Logistics and expenses (not refactored)
+  # =============================================================================
+
+  - name: sales_delivery_documents
+    description: >
+      Delivery/shipment headers (ODLN) enriched with partner and branch.
+      A delivery is the document that formalizes the physical dispatch of goods — it can precede or
+      follow the invoice depending on the operation's flow.
+
+      ODLN has no salesperson_code (a salesperson is not assigned to the delivery in SAP).
+      Grain: one record per doc_entry.
+    columns:
+      - name: doc_entry
+        description: DocEntry of the delivery (FK to ODLN).
+        tests: [not_null, unique]
+      - name: delivery_number
+        description: Visible delivery number (DocNum).
+      - name: issue_date
+        description: Delivery issue date (DocDate).
+      - name: creation_date
+        description: Date the record was created in SAP (CreateDate).
+      - name: updated_date
+        description: Date of last update (UpdateDate).
+      - name: document_status
+        description: "Document status. Values: 'O' (open), 'C' (closed)."
+      - name: canceled
+        description: "Cancellation flag. Values: 'yes', 'no'."
+      - name: customer_code
+        description: Code of the receiving customer (CardCode).
+      - name: partner_name
+        description: Customer name at the time of the delivery.
+      - name: group_code
+        description: Partner group (GroupCode).
+      - name: group_name
+        description: Partner group name.
+      - name: franchise_name
+        description: Franchise name (U_franchiseName).
+      - name: cpf_cnpj_official
+        description: Partner CPF/CNPJ without normalization.
+      - name: cpf_cnpj_normalized
+        description: Partner CPF/CNPJ without punctuation.
+      - name: partner_show_in_bi
+        description: Partner BI visibility flag ('yes'/'no').
+      - name: branch_id
+        description: ID of the branch that made the delivery (BPLId).
+      - name: branch_name
+        description: Branch name.
+      - name: branch_nomenclature
+        description: Standardized branch nomenclature (`uf-cidade`).
+
+  - name: sales_delivery_lines
+    description: >
+      Delivery lines (DLN1) enriched with item hierarchy.
+      Combine with sales_delivery_documents via doc_entry.
+
+      Traceability via BaseEntry + BaseType: the delivery can originate from an invoice (predominant
+      reverse flow — 91%), from another delivery, from an order or from a quote.
+
+      Grain: one line per (doc_entry, line_number).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, line_number]
+    columns:
+      - name: doc_entry
+        description: DocEntry of the delivery (FK to ODLN).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number on the delivery (LineNum).
+        tests: [not_null]
+      - name: item_code
+        description: Item delivered (ItemCode).
+      - name: warehouse_code
+        description: Source warehouse of the delivery (WhsCode).
+      - name: quantity
+        description: Quantity delivered (Quantity).
+      - name: line_status
+        description: "Line status. Values: 'O' (open), 'C' (closed)."
+      - name: source_doc_entry
+        description: DocEntry of the document that originated the delivery (BaseEntry).
+      - name: source_line_number
+        description: Line number in the source document (BaseLine).
+      - name: source_document_type
+        description: "Values: 13=OINV (91%), 15=ODLN, 17=ORDR, 23=OQUT, -1=no source."
+      - name: item_name
+        description: Item name (comes from `int.item`).
+      - name: family_code
+        description: Item family (hierarchy level 1).
+      - name: family_name
+        description: Textual family name.
+      - name: class_code
+        description: Item class (hierarchy level 2).
+      - name: class_name
+        description: Textual class name.
+      - name: sub_class_code
+        description: Item sub-class (hierarchy level 3).
+      - name: sub_class_name
+        description: Textual sub-class name.
+      - name: abc_curve
+        description: ABC curve of the item.
+      - name: unit_of_measure
+        description: Item unit of measure.
+      - name: manufacturer_code
+        description: Item manufacturer code.
+
+  - name: sales_freight_document
+    description: >
+      Freight charged to the customer aggregated by document (invoice and return).
+      Grain: 1 line per (document_type, doc_entry).
+
+      Filters `expense_code = 1` (freight) over [[sales_expenses]],
+      replicating the rule of the legacy view `vw_ranking_vendas_legada`
+      (`LEFT JOIN INV3 ... AND ExpnsCode = 1`). Other additional expenses
+      (code 3 'others', 5 'ipi') exist but have residual volume and do not
+      make up the "Sales R$" KPI of the current dashboard.
+
+      Consumed by `sales_invoice_documents` and `sales_return_documents` to
+      expose `freight_amount` on the header. [[fact_sales]] allocates this freight
+      across the document's lines proportionally to `line_total`.
+    columns:
+      - name: document_type
+        description: "Discriminator. Values: 'invoice', 'return'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'return'] } }
+      - name: doc_entry
+        description: DocEntry of the document (OINV or ORIN).
+        tests:
+          - not_null
+      - name: freight_amount
+        description: Sum of `expense_amount` from INV3/RIN3 with `expense_code = 1`.
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [document_type, doc_entry]
+
+  - name: sales_expenses
+    description: >
+      Additional expenses of outbound invoices (INV3) and returns (RIN3) unified, enriched
+      with the expense name (freight, insurance, IPI, etc.) via OEXD.
+
+      Grain: one line per (document_type, doc_entry, line_number).
+      Both sources (INV3 and RIN3) have LineNum extracted in staging — fine grain
+      preserved across all blocks.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - document_type
+              - doc_entry
+              - line_number
+    columns:
+      - name: document_type
+        description: "Discriminator. Values: 'invoice' (outbound invoice via INV3), 'return' (return via RIN3)."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'return'] } }
+      - name: doc_entry
+        description: DocEntry of the document (invoice or return).
+        tests: [not_null]
+      - name: line_number
+        description: Sequential line number of the expense within the document.
+        tests: [not_null]
+      - name: expense_code
+        description: "Expense code (ExpnsCode → OEXD). Common codes: 1 = freight, 3 = others, 5 = IPI."
+        tests: [not_null]
+      - name: expense_name
+        description: Textual expense name (resolved via OEXD).
+      - name: expense_amount
+        description: Monetary amount of the additional expense.
+
+  # =============================================================================
+  # Goals — consolidation of the SharePoint spreadsheets
+  # =============================================================================
+
+  - name: goal_name_entry
+    description: >
+      First goal registered per salesperson (key = `normalized_name`), computed
+      directly from the staging of the spreadsheets (`wholesale_goals`/`retail_goals`). It exists
+      to give [[salesperson_bridge]] an entry-date signal WITHOUT creating a
+      circular reference — the bridge cannot read `sales_goals` (which already reads the
+      bridge), so the 1st goal comes from this model, above the bridge in the DAG. The
+      bridge's baseline uses `first_goal` (floor 2025-01-01) as `valid_from`.
+      Grain: 1 line per `normalized_name`.
+    columns:
+      - name: normalized_name
+        description: >
+          Normalized name (lowercase, accent-insensitive, the segment before the
+          first " - "). Same normalization as salesperson_bridge and sales_goals.
+        tests:
+          - not_null
+          - unique
+      - name: first_goal
+        description: Earliest goal `date` for the name (1st goal registered).
+        tests:
+          - not_null
+
+  - name: sales_goals
+    description: >
+      Consolidation of the goal spreadsheets (wholesale + retail) with the salesperson
+      resolved by `salesperson_bridge` (SCD Type 2) — match on
+      (normalized_name, date BETWEEN valid_from AND COALESCE(valid_to, '9999-12-31')),
+      multi-store tie-break by `store_code`.
+      Planning building block — mirrored by `vendas_fiscais_*` (actuals).
+
+      Grain: 1 line per (channel, date, original_goal_salesperson,
+      original_goal_store). The spreadsheet's `Loja` column enters the key because the
+      same salesperson can have goals across different allocations on the same day
+      (e.g. Maria Souza on 2026-01-06: FRANQUIA R$ 15k + ATACADO SP R$ 8,333).
+
+      **Defensive dedup:** the wholesale spreadsheet had 62 lines duplicated on
+      `(channel, date, salesperson, store)` with distinct `Meta Diária` values, concentrated
+      in 2024 and Jan/2025 (stabilized in Feb/2025). `row_number()` by
+      `_ingested_at desc` keeps the most recent one. The
+      `unique_combination_of_columns` test ensures that if the problem returns, the
+      build breaks.
+
+      **Filters applied:**
+        - `year(date) >= 2024` (bridge coverage — SAP activity since 2024)
+        - `Vendedor IS NOT NULL`
+        - `Vendedor NOT LIKE 'FRANQUIA%'` (category discontinued in 2024)
+
+      Goals with no match in the bridge come in with `salesperson_code = NULL` —
+      this preserves visibility of cases without a master record (former employees,
+      ambiguous Maria). They do not join with invoices but appear in
+      data-quality reports.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - channel
+              - date
+              - original_goal_salesperson
+              - original_goal_store
+    columns:
+      - name: channel
+        description: "Discriminator of the source spreadsheet. Values: 'wholesale', 'retail'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['wholesale', 'retail'] } }
+      - name: date
+        description: Date of the daily goal.
+        tests: [not_null]
+      - name: original_goal_salesperson
+        description: >
+          Free text from the `Vendedor` column in the spreadsheet. Typical format:
+          "Name - Store - Role". Preserved for auditing.
+        tests: [not_null]
+      - name: original_goal_store
+        description: >
+          Free text from the `Loja` column in the spreadsheet (e.g. "BONSUCESSO - RJ",
+          "ATACADO SP", "FRANQUIA"). Does NOT match `store.store_name` nor
+          `store_mapping` — it is merely descriptive. It enters the key because it
+          discriminates distinct allocations of the same salesperson.
+      - name: daily_goal
+        description: Daily goal amount in reais.
+      - name: normalized_name
+        description: >
+          Salesperson name normalized for the match key against the
+          `salesperson_bridge` — lowercase, accent-insensitive, containing only the
+          segment before the first " - ".
+        tests: [not_null]
+      - name: goal_store_text
+        description: >
+          Store text parsed from the salesperson name in the goal (segment between the 1st
+          and 2nd " - "). AUDITING only — multi-store tie-break is now by
+          `goal_store_code` against `salesperson_bridge.store_code`.
+      - name: salesperson_code
+        description: >
+          SlpCode from OSLP resolved by the bridge. NULL for goals whose salesperson
+          has no master record in SAP (former employees, ambiguous Maria, etc.) —
+          those lines do not join with invoices.
+      - name: salesperson_name
+        description: Canonical salesperson name (coming from the bridge). NULL when there is no match.
+      - name: goal_store_code
+        description: >
+          Store where the goal was allocated in the spreadsheet. Resolved via
+          `original_goal_store → standardized_store.old_store_name`
+          (UPPER+TRIM), with an override for "BONSUCESSO - RJ" → "02".
+          **Use this field to aggregate goal-by-store.** Different from "the
+          salesperson's store" — when the salesperson name carries a team/role in the middle
+          (e.g. "Ana Lima - Televendas - Vendedor" with Loja=ATACADO
+          SP), the goal belongs to ATACADO SP, not Televendas.
+      - name: goal_store_name
+        description: >
+          New standardized name of the goal's store (comes from
+          `standardized_store.new_store_name`). Descriptive attribute.
+      - name: bridge_source
+        description: >
+          Source of the store in the bridge that matched — always `'sap_oslp'` (master record).
+          NULL when the goal has no match in the bridge.
+
+  - name: sales_installments
+    description: >
+      Outbound invoice installments (INV6) — the customer's payment plan.
+      Grain: one line per (doc_entry, installment_number).
+
+      Translated statuses:
+      - 'open' (installment_status = 'O' in SAP)
+      - 'closed' (installment_status = 'C') — may be fully paid
+        (paid_amount = installment_amount) or never paid on canceled/reversed invoices.
+
+      open_balance = installment_amount - paid_amount. Can be negative in rare
+      cases (payment greater than the amount issued).
+
+      Consumed by [[fact_accounts_receivable]] (aggregates at the invoice level).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [doc_entry, installment_number]
+    columns:
+      - name: doc_entry
+        description: DocEntry of the outbound invoice (OINV).
+        tests:
+          - not_null
+      - name: installment_number
+        description: Sequential installment number within the document (InstlmntID from INV6).
+        tests:
+          - not_null
+      - name: due_date
+        description: Installment due date (DueDate).
+      - name: installment_amount
+        description: Nominal installment amount (InsTotal).
+        tests:
+          - not_null
+      - name: paid_amount
+        description: Amount already received for this installment (Paid).
+        tests:
+          - not_null
+      - name: open_balance
+        description: '`installment_amount - paid_amount`. Negative in rare cases (payment > amount issued).'
+        tests:
+          - not_null
+      - name: installment_status
+        description: '"open" (O) or "closed" (C).'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['open', 'closed'] } }

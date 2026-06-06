@@ -1,0 +1,19 @@
+# Extractors environment (isolated venv /opt/venvs/extract).
+# Union of the deps from acme-sap-ingestion and acme-sharepoint-connector.
+# Unpinned (same as the source repos); pinning is future hardening.
+
+# --- common / SQL Server ---
+pyodbc
+sqlalchemy
+pyyaml
+python-dotenv
+python-dateutil
+
+# --- SAP HANA (extract-sap) ---
+hdbcli
+sqlalchemy-hana
+
+# --- SharePoint / Microsoft Graph (extract-sharepoint) ---
+requests
+pandas
+openpyxl

@@ -1,0 +1,8 @@
+# dbt environment (isolated venv /opt/venvs/dbt).
+# Versions IDENTICAL to those in acme-dw-dbt/pyproject.toml — the image must
+# match what the dbt project uses in dev, otherwise behavior diverges.
+dbt-core==1.11.9
+dbt-sqlserver==1.9.0
+# `edr` CLI (Elementary) for the observability report. Keeps parity
+# with the dbt project; used in Phase 4 (monitoring).
+elementary-data[sqlserver]==0.23.4

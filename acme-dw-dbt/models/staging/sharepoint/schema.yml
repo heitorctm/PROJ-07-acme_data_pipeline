@@ -1,0 +1,80 @@
+version: 2
+
+models:
+  - name: store_mapping
+    description: >
+      Translation of the old store name (as it appears in SAP) to the new name
+      standardized by management (UF-NAME format). Includes the store postal code (CEP)
+      normalized to 8 digits, left-padded with a leading zero when necessary.
+
+      **Usage:** auxiliary visual dimension — does not replace `store` (stg_sap); it only
+      supplements it with standardized nomenclature and postal code.
+
+      **Granularity:** 1 record per old/new store (a few dozen records).
+
+      **Coverage vs SAP:** most stores match `stg_sap.store`. Some stores in the mapping
+      have no counterpart in SAP — possibly new, renamed, or deactivated stores. And some
+      SAP units are not in the mapping — all administrative/operational (e.g., headquarters,
+      distribution center), which are not part of the commercial network.
+    columns:
+      - name: old_store_name
+        description: Store name as it appears in SAP B1 (the ANTIGO column in the source).
+      - name: new_store_name
+        description: "Name standardized by management, UF-NAME format (e.g., RJ-CENTRO)."
+      - name: postal_code
+        description: >
+          Store postal code (CEP) normalized to 8 digits. Applies `digits_only()` (removes
+          dots, hyphens, spaces) and left-pads with a leading zero when the original value
+          has fewer than 8 digits (a common scenario for São Paulo postal codes that lose
+          their leading zero in Excel-based ingestions).
+      - name: _ingested_at
+        description: Timestamp of when the record was ingested into the data warehouse.
+
+  - name: wholesale_goals
+    description: >
+      Daily sales goals for the wholesale channel, maintained by the commercial team in a
+      SharePoint spreadsheet. Apparent granularity: (date, store, salesperson).
+
+      **Note:** `store` is free-form uppercase text (e.g., 'LOJA EXEMPLO') —
+      it matches `old_store_name` in `store_mapping`, not directly
+      `stg_sap.store`. `salesperson` is descriptive text in the format
+      'Name - Loja XXX - Vendedor' — parsing is deferred to the int layer.
+
+      The source `Coluna1` column was dropped (Excel residue).
+    columns:
+      - name: salesperson_order
+        description: Salesperson code/order in the source spreadsheet (frequently NULL).
+      - name: date
+        description: Goal date (converted from datetime2 to date).
+      - name: branch_order
+        description: Branch order in the spreadsheet (frequently NULL).
+      - name: store
+        description: Store name in uppercase (free-form text, maps to `old_store_name` in `store_mapping`).
+      - name: salesperson
+        description: "Descriptive salesperson text (format 'Name - Loja XXX - Vendedor'). Parsing is deferred to the int layer."
+      - name: daily_goal
+        description: Daily goal amount in BRL (converted from float to decimal(20,6)).
+      - name: _ingested_at
+        description: Timestamp of when the record was ingested into the data warehouse.
+
+  - name: retail_goals
+    description: >
+      Daily sales goals for the retail channel, maintained by the commercial team in a
+      SharePoint spreadsheet. Apparent granularity: (date, store, salesperson).
+
+      Schema identical to `wholesale_goals` (without the residual `Coluna1` column).
+    columns:
+      - name: salesperson_order
+        description: Salesperson code/order in the source spreadsheet (frequently NULL).
+      - name: date
+        description: Goal date (converted from datetime2 to date).
+      - name: branch_order
+        description: Branch order in the spreadsheet (frequently NULL).
+      - name: store
+        description: Store name in uppercase (free-form text, maps to `old_store_name` in `store_mapping`).
+      - name: salesperson
+        description: "Descriptive salesperson text (format 'Name - Loja XXX - Vendedor'). Parsing is deferred to the int layer."
+      - name: daily_goal
+        description: Daily goal amount in BRL (converted from float to decimal(20,6)).
+      - name: _ingested_at
+        description: Timestamp of when the record was ingested into the data warehouse.

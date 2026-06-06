@@ -1,0 +1,583 @@
+version: 2
+
+models:
+  - name: fact_sales
+    description: >
+      # fact_sales
+
+      This is the table that answers "**how much did Acme sell**". Each row here
+      represents **one item sold on an invoice** (or one returned item).
+      It is the heart of the sales BI — every revenue report, product mix,
+      salesperson ranking, and margin analysis starts from it.
+
+      ## What goes in here
+
+      **Outbound invoices** (real sales) and **invoice returns** (a customer who
+      returned merchandise). Quotes and orders do NOT go in — a quote is just
+      intent, an order is a commitment, but neither is an actual sale. They become
+      a separate funnel fact when we need to measure conversion rate.
+
+      ## Why some invoices that exist in SAP do NOT appear here
+
+      The business rule is: **it only counts as a real commercial sale for Acme**
+      if it meets all the criteria below. Each exclusion has a practical
+      reason and a technical rule.
+
+      ### 1. A canceled invoice STILL goes into the fact (with an offsetting sign)
+
+      Unlike the legacy V3 view (which filtered out `CANCELED NOT IN ('Y','C')`),
+      here we keep both:
+
+        - **Original invoice** (`CANCELED = 'Y'`) — enters with sign **+1**, in the
+          month the invoice was created in SAP (`CreateDate`).
+        - **Reversal invoice** (`CANCELED = 'C'`) — enters with sign **−1**, in the
+          month the reversal was created (the cancellation date).
+
+      The two do NOT land in the same month: the original canceled invoice stays in
+      the month of the sale, and the reversal subtracts in the month it was
+      canceled. The all-time total stays correct. A closed month can shift
+      retroactively if an old invoice gets canceled — the same behavior as the
+      official BI.
+
+      → **No technical filter** — the fact applies the +1/−1 sign and the BI sums.
+
+      ### 2. Do not count a customer that is "invisible" in the BI
+
+      The customer master (OCRD) has a flag `U_PARTNER_SHOW_IN_BI`
+      that the sales team uses to mark partners that **should not appear
+      in management analyses**: Acme's own internal master data used for
+      operational movements, test/staging customers, and
+      administrative accounts disguised as customers.
+
+      We only accept partners marked as `'S'` (yes, it is a real
+      commercial customer). Today only ~16 partners are marked as `'N'` in a universe
+      of 72k — it is a manually curated list.
+
+      → **Technical filter:** `partner_show_in_bi = 'yes'` (comes from `OCRD.U_PARTNER_SHOW_IN_BI = 'S'`).
+      There is also a separate **GLOBAL override**: `document_show_in_bi = 'yes'` ("force display")
+      makes the document enter, breaking through ALL filters (partner/intercompany/usage/canceled) — see the
+      "How the document's show_in_bi enters" section below.
+
+      ### 3. Do not count sales between Acme's own companies (intercompany)
+
+      When one Acme unit sells to another unit of Acme itself,
+      this shows up in SAP as an outbound invoice but it is not real revenue for
+      the group — it is just internal movement of merchandise. The marker is group
+      `111` in the customer master (`OCRD.GroupCode = 111`).
+
+      We exclude this entire group **with one important exception**: the
+      **branch 9 (the group's manufacturing unit)**. This branch is the group's
+      gypsum/drywall factory, and it "sells" to other Acme branches — but
+      since it is the **real supplier** of the group's merchandise (it transforms
+      raw material into product), this "internal sale" needs to count as its own
+      real revenue.
+
+      That is why the rule becomes: exclude group 111, **but if it is branch 9, keep it**.
+
+      → **Technical filter:** `group_code <> 111 OR branch_id = 9` (comes from `OCRD.GroupCode` and `OINV.BPLId`).
+
+      ### 4. Only count product lines with a fiscal usage of "sale"
+
+      Each invoice line in SAP is classified with a fiscal usage code
+      (the `OUSG` catalog). We only accept the codes that mean a commercial
+      sale:
+
+      - **9** — Sale of Own Product (product manufactured by Acme)
+      - **10** — Sale of Goods Acquired from Third Parties (resale)
+      - **20** — Sale with Future Delivery (sold now but delivered later)
+      - **22** — Sale to End Consumer (typical of retail)
+      - **37** — Sale by Order (scheduled sale)
+      - **46** — Sale with Suframa (Free Trade Zone region)
+      - **56** — Sale by Order to End Consumer
+
+      Everything **outside** this list is something that shows up in the same OINV
+      table but **is not a commercial sale**: internal transfer (code 5),
+      tax complement (33), fiscal adjustment invoices, etc. That is a
+      fiscal/logistics operation, not revenue.
+
+      → **Technical filter:** `usage_id IN (9, 10, 20, 22, 37, 46, 56)` (comes from `INV1.Usage`).
+
+      ### 5. Returns follow a different rule
+
+      For returns (ORIN), the fiscal usage filter is on the **header**,
+      not the line: `MainUsage = 24` (Merchandise Return). Each line
+      of a return may carry any usage code inherited from the original
+      invoice, but the whole operation is only a "real commercial return"
+      when the header was marked as 24.
+
+      Returns with other codes (e.g., 36 = Return of VEF) are specific
+      fiscal adjustments that do not represent a "negative sale" in the
+      commercial sense.
+
+      → **Technical filter:** `main_usage_id = 24` for `document_type = 'return'` (comes from `RIN12.MainUsage`).
+
+      ## How the document's `show_in_bi` enters (GLOBAL OVERRIDE)
+
+      The OINV/ORIN has another field `U_SHOW_IN_BI` (on the document, not on the
+      partner). The name is **misleading** — it is not a "show in BI" filter. It is a
+      manual **"force display"** flag: default `'N'` (neutral, **does not hide**) and
+      rarely someone marks `'S'` to force the entry of a document that would
+      otherwise be left out by **any** filter. There are 56 invoices marked `'S'` in the history.
+
+      That is why it **cannot be the ONLY filter** (`WHERE = 'S'` would lose 99.98% of
+      sales), but it enters as a **GLOBAL OVERRIDE** in the fact's WHERE clause:
+      `document_show_in_bi = 'yes' OR (partner AND intercompany AND fiscal usage AND canceled)`.
+      The flag breaks through **all** filters — not just the partner one. It mirrors the
+      BI's exception rule. Cases confirmed in the Jun/2026 reconciliation: invoice 176286 (hidden
+      partner) and return 4055 (fiscal usage 36, outside the return whitelist).
+
+      ## Why we do NOT filter by `triangulation`
+
+      The OINV's `U_TRIANGULATION` field has 3 values: `'N'` (not a
+      triangulation), `'C'` (to be confirmed), and `'S'` (yes, it is a triangulation).
+      In theory it would be used to exclude fiscal triangular operations from the BI.
+      In practice, 85% of invoices are at `'C'` (to be confirmed) — it is the default
+      operational state, it does not mean it is "pending". Filtering by
+      `'N'` exclusively would drop 99% of revenue. The legacy V3 view also
+      does not filter on it. We keep the column exposed as an attribute (auditing) but
+      not as a filter.
+
+      ## How we handle the signs (positive vs negative)
+
+      Returns and invoice reversals come in positive from SAP. For the "net revenue"
+      KPI, the direct sum needs to subtract both. That is why, in the fact, we
+      **invert the sign** of the **additive metrics** in two cases:
+
+        - `document_type = 'return'` (customer return)
+        - `canceled      = 'reversal'` (reversal invoice generated by SAP B1
+          when an invoice is canceled)
+
+      Affected metrics: quantity, line_total, total_taxes, total_cost,
+      gross_profit — they become **negative**.
+
+      Practical result: `SUM(line_total)` in Power BI already gives the
+      net figure (invoice − return − reversal) without a CASE WHEN. Non-additive
+      metrics (unit prices, percentages, gross margin) stay positive — they are
+      rates, and aggregation is a weighted average in the BI.
+
+      ## Which date to use
+
+      The fact exposes ONE date column: `date`. Source: SAP's `CreateDate`
+      (the date the document was actually created in the system). It is the
+      same rule the official BI uses.
+
+      Implications:
+
+      - Canceling an old invoice does not retro-apply. The original canceled invoice
+        stays in the month it was created (+1) and the reversal subtracts in the
+        month it was canceled (−1).
+      - A closed month can shift retroactively — when an invoice from
+        previous months is canceled today, the current month's balance gets smaller.
+      - It aligns with `CreateDate`, not the fiscal `DocDate` — whoever needs the
+        fiscal date for SPED/NFe uses the int directly (`issue_date` still
+        exists there).
+
+      ## KPI "Sales R$"
+
+      `line_total` is the fact's revenue metric — revenue from the product
+      sold, without freight. `SUM(line_total)` in Power BI delivers "Sales R$"
+      directly, with the return/reversal sign already applied.
+
+      The freight charged to the customer (INV3, expense code 1) **is no longer
+      broken out by line** in the fact. If you need the freight total
+      per document, see [[sales_fiscal_documents]]
+      (`freight_amount` in the header).
+
+      ## About the load_kit attribute (retail / wholesale)
+
+      SAP classifies each invoice as retail (`'N'`), wholesale (`'S'`), or
+      "pending" (`'P'`) through the `U_LOAD_KIT` column. The `'P'` is the default
+      state when the salesperson does not fill it in — it does not mean anything
+      specific, it is **missing data**. Instead of dumping these invoices into
+      "retail" or "wholesale" by guesswork, we expose them as **'unclassified'**.
+      This makes the leakage visible: the sales team can see "R$ X in
+      March with no classification" and can chase the missing entry at the source.
+
+      ## Link to the dimensions
+
+      | FK in the fact | Dimension |
+      |---|---|
+      | `date` | [[dim_date]] |
+      | `item_code` | [[dim_item]] |
+      | `partner_code` (customer) | [[dim_partner]] |
+      | `employee_code` (salesperson) | [[dim_employees]] |
+      | `store_code` | [[dim_store]] |
+      | `warehouse_code` | [[dim_warehouse]] |
+
+      ## Additive metrics (use SUM in the BI)
+
+      - `quantity` — units sold (negative on a return)
+      - `line_total` — product revenue, without freight (KPI "Sales R$")
+      - `total_taxes` — line taxes
+      - `total_cost` — `quantity × inventory_cost_price`
+      - `gross_profit` — `line_total − total_cost`
+
+      ## Non-additive metrics (use a weighted average in the BI)
+
+      Per-unit rates/quotes. Summing makes no sense — adding R$ 50 + R$ 80
+      of unit price would give R$ 130, which means nothing.
+
+      - `unit_price`, `price_before_discount`, `discount_percentage`
+      - `inventory_cost_price`, `bdi_price`, `cost_price`
+      - `sap_margin` (markup)
+
+      ## Document attributes in the fact (degenerate dimensions)
+
+      These are descriptive invoice columns that stay here instead of becoming a
+      dimension of their own, because they have high cardinality and/or little analytical reuse:
+
+      - `document_number`, `document_type`, `cfop`
+      - `usage_id`, `main_usage_id`, `main_usage_description`
+      - `presale_channel`, `load_kit`
+    columns:
+      - name: document_id
+        description: >
+          Surrogate key of the document in the format `<type>-<doc_entry>` (e.g.,
+          'nf-368971'). Useful for joins with a future sales_fiscal_documents.
+        tests:
+          - not_null
+      - name: document_type
+        description: "Source discriminator. Values: 'invoice', 'return'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice', 'return'] } }
+      - name: doc_entry
+        description: SAP DocEntry — unique within the document_type.
+        tests:
+          - not_null
+      - name: line_number
+        description: Line number within the document (SAP `LineNum`).
+        tests:
+          - not_null
+      - name: document_number
+        description: Fiscal document number (SAP DocNum).
+      - name: date
+        description: >
+          Date the document was created in SAP (`CreateDate`). The only
+          date column of the fact — it aligns with the official BI and reflects the
+          system's operational movement. FK to [[dim_date]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+      - name: item_code
+        description: Code of the item sold. FK to [[dim_item]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_item')
+                field: item_code
+      - name: partner_code
+        description: Customer code. FK to [[dim_partner]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_partner')
+                field: partner_code
+      - name: employee_code
+        description: Code of the responsible salesperson. FK to [[dim_employees]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_employees')
+                field: employee_code
+              config:
+                where: "employee_code is not null"
+      - name: store_code
+        description: Store code of the document. FK to [[dim_store]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_code
+              config:
+                where: "store_code is not null"
+      - name: warehouse_code
+        description: Code of the outbound/return warehouse. FK to [[dim_warehouse]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_warehouse')
+                field: warehouse_code
+              config:
+                where: "warehouse_code is not null"
+      - name: usage_id
+        description: >
+          Fiscal usage of the LINE (`Usage` from INV1/RIN1). For invoices, restricted to
+          the whitelist 9, 10, 20, 22, 37, 46, 56. For returns, it varies (24, 36
+          and others are common) — the return filter is by `main_usage_id`.
+      - name: main_usage_id
+        description: >
+          Fiscal usage of the header (`MainUsage`). ~36% of invoices are NULL —
+          a SAP state.
+      - name: main_usage_description
+        description: Text description of the main usage (resolved via OUSG).
+      - name: cfop
+        description: Fiscal Code of Operations and Services (CFOP) of the line.
+      - name: presale_channel
+        description: Origin channel of the partner/document (crm, google, 'no'...).
+      - name: load_kit
+        description: >
+          Load type of the document. Values: 'retail', 'wholesale',
+          'unclassified' (when SAP's U_LOAD_KIT came in as 'P' — pending,
+          the default when the salesperson did not fill it in). NULL only on invoice
+          returns that had no original load_kit. 'unclassified' documents
+          stay out of the retail/wholesale KPIs but still add into the
+          total — they flag a master-data leak to be fixed at the source.
+      - name: canceled
+        description: >
+          Cancellation status of the document. Values: 'no' (firm invoice),
+          'canceled' (`CANCELED = 'Y'` on OINV — an invoice that was canceled;
+          enters with sign +1 in the month it was created), 'reversal'
+          (`CANCELED = 'C'` — a reversal invoice generated to undo an original;
+          enters with sign −1 in the month the reversal was created).
+          Unlike V3, this is NOT a filter — the canceled+reversal pair offsets
+          via sign. Since the date rule is now `CreateDate`, the pair does NOT
+          net to zero in the same month — the reversal subtracts in the cancellation month.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['no', 'canceled', 'reversal']
+      - name: quantity
+        description: Quantity sold (negative for a return).
+        tests:
+          - not_null
+      - name: line_total
+        description: Gross line revenue (negative for a return).
+        tests:
+          - not_null
+      - name: total_taxes
+        description: Line taxes (negative for a return).
+      - name: total_cost
+        description: "`quantity × inventory_cost_price` (negative for a return)."
+      - name: gross_profit
+        description: "`line_total - total_cost` (negative for a return)."
+      - name: unit_price
+        description: Sale price per unit (positive — do not sum).
+      - name: price_before_discount
+        description: Price before the line discount (positive — do not sum).
+      - name: discount_percentage
+        description: Discount percentage applied (do not sum).
+      - name: inventory_cost_price
+        description: Unit inventory cost (`INMPrice`) — positive, do not sum.
+      - name: bdi_price
+        description: BDI/quote price — positive, do not sum.
+      - name: cost_price
+        description: Reference cost price — positive, do not sum.
+      - name: sap_margin
+        description: Markup (`U_MARGIN`) — multiplier, do not sum.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [document_type, doc_entry, line_number]
+
+  - name: fact_goals
+    description: >
+      # fact_goals
+
+      This is the table that answers "**what is each salesperson's sales goal
+      per day**". Each row represents **one daily goal for a salesperson
+      in a channel and a store allocation**. Without it, fact_sales' actuals
+      stand alone — knowing whether R$ 100k is "a lot" or "a little"
+      depends on comparing it to the goal. It is the basis for KPIs like % of attainment,
+      ranking of goal-beaters, and sales gap.
+
+      ## Where the data comes from
+
+      The goals are **not in SAP**. They are defined by the sales
+      team in **two separate spreadsheets on SharePoint**:
+
+        - `retail_goals` — retail salespeople (direct service, physical
+          stores, end consumer)
+        - `wholesale_goals` — wholesale salespeople (B2B, account executives, resale,
+          franchises)
+
+      Each spreadsheet has **one row per salesperson per day**, with the value
+      they are expected to sell on that day. The two are unified in `int_sales.sales_goals`
+      with a `channel` discriminator.
+
+      ## Why some goals that exist in the spreadsheet do NOT appear here
+
+      ### 1. Only count goals from 2025 onward
+
+      The salesperson bridge (which links "name in the spreadsheet" to "code in
+      SAP") now dates the baseline by the salesperson's 1st GOAL (floored at
+      2025-01-01) instead of the old fixed 2025-10-01. With this, the code resolves
+      from 2025-01-01 onward; 2024 goals still come through **without a salesperson
+      code** (the bridge does not reach that period).
+
+      From 2025 onward the goals have a resolved salesperson. That is why the fact is
+      restricted to 2025+. Whoever needs the 2024 history (with orphans) consumes
+      [[sales_goals]] directly in the int. Keeping orphans in the fact would prevent a
+      non-null PK on employee_code, which is the FK to dim_employees.
+
+      → **Technical filter:** `year(m.date) >= 2025 AND m.salesperson_code IS NOT NULL`.
+
+      ### 2. Do not count a row without an identified salesperson
+
+      Even in 2026, a future master-data change could generate a goal with a
+      new name that does not yet have a match. This filter is defensive.
+
+      → **Technical filter:** `m.salesperson_code IS NOT NULL`.
+
+      ## Why the key includes store (and not just channel+date+salesperson)
+
+      One salesperson can have **more than one goal on the same day, in the same
+      channel**, across **different stores**. Real case from April/2026:
+
+        - João Silva on 2026-04-30, retail channel:
+            - ACME HOMES → R$ 3,000
+            - ACME OBRAS → R$ 5,000
+
+      It is a salesperson who covers 2 stores/allocations in the same shift. If the key
+      were just (channel, date, salesperson), the two rows would collide on the PK.
+      That is why `original_goal_store` (raw text from the "Loja" column of the
+      spreadsheet) enters the composite key.
+
+      ## Why channel is NOT the same as fact_sales' load_kit
+
+      The two names look like synonyms but mean different things:
+
+        - **`channel` from fact_goals** comes from the spreadsheet. It is **where the
+          salesperson has a goal registered**. It reflects an administrative decision
+          by the sales team ("this salesperson is retail", "that one is wholesale").
+
+        - **`load_kit` from fact_sales** comes from SAP (`U_LOAD_KIT` of OINV).
+          It is **how each issued invoice was fiscally classified** by the
+          salesperson themselves at the time of the sale.
+
+      In theory they should coincide, but in practice they diverge: a wholesale
+      salesperson can issue an invoice marked as retail to serve a one-off
+      individual customer, and vice versa. This divergence is **useful
+      information**, not an error — it becomes visible when Power BI crosses
+      the two facts.
+
+      ## About daily_goal = 0
+
+      Some rows have `daily_goal = 0`. This is the handling of a **NULL in the
+      spreadsheet** (a salesperson on vacation, leave, or a zeroed goal with no
+      entry) converted to 0 for consistency:
+
+        - `SUM(daily_goal)` still gives the right number
+        - `value / daily_goal` avoids division by NULL in the BI
+        - The team sees "salesperson X had a goal of 0 on day Y" and understands they were
+          out (vs "row does not exist", which would be ambiguous)
+
+      ~1,440 rows in Mar-Apr/2026 are in this situation.
+
+      ## About the relationship with the salesperson_bridge
+
+      Each goal is crossed with the SCD Type 2 bridge to resolve the
+      salesperson's code **in the context of the goal's date**. This matters because
+      a salesperson can change stores over time — a January/2026 goal for
+      "Maria Souza - Mega Loja RJ" needs to match the
+      Maria who was at Mega Loja RJ at that moment, not any
+      other allocation of hers.
+
+      `bridge_source` is exposed for auditing — always `'sap_oslp'` (store from the
+      salesperson master).
+
+      ## About the goal's store
+
+      `goal_store_code` / `goal_store_name` represent **the store where the goal
+      was allocated in the spreadsheet** — resolved via `original_goal_store →
+      standardized_store`. Use these fields to aggregate goals by store.
+
+      Do not confuse them with "the store where the salesperson is registered in SAP". For
+      that, join with [[dim_employees]] and use `salesperson_store_code` from
+      there. The two concepts diverge when the salesperson's name in the spreadsheet
+      carries the team/role in the middle (e.g., "Ana Lima - Televendas -
+      Vendedor" with Loja=ATACADO SP — the goal belongs to ATACADO SP, not to Televendas).
+
+      ## Link to the dimensions
+
+      | FK in the fact | Dimension |
+      |---|---|
+      | `date` | [[dim_date]] |
+      | `employee_code` (salesperson) | [[dim_employees]] |
+
+      ## Additive metrics (use SUM in the BI)
+
+      - `daily_goal` — planned sales value on the date for that allocation
+
+      ## Descriptive attributes (match auditing)
+
+      - `original_goal_salesperson` / `original_goal_store` — raw text from the
+        spreadsheet (traceability back to the source)
+      - `normalized_name` / `goal_store_text` — normalized versions used in the
+        match with the salesperson_bridge
+      - `goal_store_code` / `goal_store_name` — store where the goal was allocated
+        in the spreadsheet, resolved via `original_goal_store → standardized_store`.
+        **It is the source of truth for aggregating goal-by-store.**
+      - `bridge_source` — always `'sap_oslp'` (store from the master). Useful for
+        auditing where the salesperson match came from.
+    columns:
+      - name: channel
+        description: "'wholesale' or 'retail' — origin of the goals spreadsheet."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['wholesale', 'retail'] } }
+      - name: date
+        description: Date of the daily goal. FK to [[dim_date]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+      - name: employee_code
+        description: Salesperson responsible for the goal. FK to [[dim_employees]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_employees')
+                field: employee_code
+      - name: original_goal_store
+        description: >
+          Raw text from the `Loja` column of the spreadsheet. It enters the PK because
+          it discriminates multiple allocations of the same salesperson/date/channel.
+        tests:
+          - not_null
+      - name: original_goal_salesperson
+        description: Raw text from the `Vendedor` column of the spreadsheet (auditing).
+      - name: normalized_name
+        description: Normalized name (lowercase + accent-insensitive) used in the match with the bridge.
+      - name: goal_store_text
+        description: >
+          Store snippet extracted from `original_goal_salesperson` (between the 1st and
+          2nd ' - '). It is not the same as `original_goal_store`.
+      - name: goal_store_code
+        description: >
+          Store where the goal was allocated in the spreadsheet. Resolved via
+          `original_goal_store → standardized_store.old_store_name`
+          (UPPER+TRIM), with an override for "BONSUCESSO - RJ" → "02".
+          **Use this field to aggregate goal-by-store.**
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_code
+      - name: goal_store_name
+        description: Standardized new name of the goal's store (comes from `standardized_store.new_store_name`).
+      - name: bridge_source
+        description: "Always 'sap_oslp' (store from the salesperson master)."
+        tests:
+          - accepted_values: { arguments: { values: ['sap_oslp'] } }
+      - name: daily_goal
+        description: >
+          Planned sales value on the date for that allocation. Additive.
+          NULL in the spreadsheet (a salesperson on vacation, leave, or a zeroed goal
+          with no entry) is converted to 0 — semantically equivalent
+          and avoids NULL in the fact. ~1,440 cases in Mar-Apr/2026.
+        tests:
+          - not_null
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [channel, date, employee_code, original_goal_store]

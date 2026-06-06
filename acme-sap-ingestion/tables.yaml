@@ -1,0 +1,1170 @@
+# tables and columns to extract from SAP HANA
+# format:
+#
+# TABLE_NAME:
+#   object_type: table_name | view
+#   strategy: incremental_append | incremental_upsert | incremental_via_header | full_reload | daily_snapshot
+#   primary_key:
+#     - PK_COLUMN
+#   watermark_column: DATE_COLUMN
+#   initial_load:
+#     start: "YYYY-MM-DD"   # null = no date filter
+#     end: "YYYY-MM-DD"      # null = no date filter
+#     window_months: 3        # null = load everything at once
+#   columns:
+#     - COLUMN1
+#     - COLUMN2
+#
+# tables with @ in the name need to be quoted:
+#
+# "@TABLE_NAME":
+#   object_type: table
+#   ...
+
+OINV:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - DocDueDate
+    - DocStatus
+    - DocTotal
+    - UpdateDate
+    - UpdateTS
+    - BPLId
+    - BPLName
+    - CANCELED
+    - CardCode
+    - CardName
+    - Comments
+    - Serial
+    - SlpCode
+    - U_externalTicket
+    - U_LOAD_KIT
+    - U_Store
+    - U_PROTEST
+    - CreateDate
+    - GrosProfit
+    - DocTotalSy
+    - PeyMethod
+    - U_PRESALE
+    - DiscSum
+    - U_FINANCE_VALIDATED
+    - isIns
+    - DpmAmnt
+    - SeqCode
+    - U_SHOW_IN_BI
+    - TransId
+    - VatSum
+    - NfeValue
+    - UpdInvnt
+    - TaxDate
+    - U_externalTicketDate
+    - U_TRIANGULATION
+    - Max1099
+    - PaidSys
+
+INV1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: OINV
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - LineNum
+    - ItemCode
+    - Dscription
+    - Quantity
+    - Price
+    - PriceBefDi
+    - LineTotal
+    - VatSum
+    - INMPrice
+    - DiscPrcnt
+    - LineStatus
+    - Usage
+    - CFOPCode
+    - U_BDI_PRICE
+    - U_COST_PRICE
+    - WhsCode
+    - BaseEntry
+    - BaseType
+    - Price
+    - U_MARGIN
+
+OQUT:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - DocDueDate
+    - DocStatus
+    - DocTotal
+    - DocTotalSy
+    - GrosProfit
+    - CANCELED
+    - CardCode
+    - CardName
+    - SlpCode
+    - PeyMethod
+    - DiscSum
+    - U_LOAD_KIT
+    - U_Store
+    - SeqCode
+    - BPLId
+    - CreateDate
+    - UpdateDate
+    - UpdateTS
+    - VatSum
+    - Max1099
+
+QUT1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: OQUT
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - LineNum
+    - ItemCode
+    - Dscription
+    - Quantity
+    - Price
+    - PriceBefDi
+    - LineTotal
+    - VatSum
+    - INMPrice
+    - DiscPrcnt
+    - LineStatus
+    - Usage
+    - CFOPCode
+    - U_BDI_PRICE
+    - U_COST_PRICE
+    - WhsCode
+    - BaseEntry
+    - BaseType
+    - U_MARGIN
+
+ORIN:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - DocDueDate
+    - DocStatus
+    - DocTotal
+    - DocTotalSy
+    - GrosProfit
+    - CANCELED
+    - CardCode
+    - CardName
+    - SlpCode
+    - PeyMethod
+    - DiscSum
+    - U_LOAD_KIT
+    - U_Store
+    - U_PRESALE
+    - U_FINANCE_VALIDATED
+    - SeqCode
+    - BPLId
+    - CreateDate
+    - UpdateDate
+    - UpdateTS
+    - VatSum
+    - U_externalTicketDate
+    - Serial
+    - U_externalTicket
+    - U_SHOW_IN_BI
+
+RIN1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: ORIN
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - LineNum
+    - ItemCode
+    - Dscription
+    - Quantity
+    - Price
+    - PriceBefDi
+    - LineTotal
+    - VatSum
+    - INMPrice
+    - DiscPrcnt
+    - LineStatus
+    - Usage
+    - CFOPCode
+    - U_BDI_PRICE
+    - U_COST_PRICE
+    - WhsCode
+    - BaseEntry
+    - BaseType
+    - U_MARGIN
+    - ActBaseEnt
+
+ORDR:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - DocDueDate
+    - DocStatus
+    - DocTotal
+    - CANCELED
+    - CardCode
+    - CardName
+    - SlpCode
+    - BPLId
+    - CreateDate
+    - UpdateDate
+    - UpdateTS
+    - VatSum
+    - GrosProfit
+
+RDR1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: ORDR
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - LineNum
+    - BaseEntry
+    - BaseLine
+    - TrgetEntry
+    - ItemCode
+    - Dscription
+    - Quantity
+    - Price
+    - LineTotal
+    - WhsCode
+    - LineStatus
+    - OpenQty
+    - BaseType
+
+OITM:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - ItemCode
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ItemCode
+    - UpdateDate
+    - UpdateTS
+    - FirmCode
+    - InvntryUom
+    - InvntItem
+    - SellItem
+    - PrchseItem
+    - ItemName
+    - OnHand
+    - ItmsGrpCod
+    - U_CLASS
+    - U_FAMILY
+    - U_SUB_CLASS
+    - U_CURVE
+    - InvntItem
+    - frozenFor
+    - validFor
+    - U_MADE_TO_ORDER
+    - U_LEAD_TIME
+    - U_SCORE
+    - SWeight1
+
+OCRD:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - CardCode
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - CardCode
+    - UpdateDate
+    - UpdateTS
+    - CardFName
+    - GroupCode
+    - CardType
+    - Balance
+    - Password
+    - LicTradNum
+    - SlpCode
+    - U_PARTNER_SHOW_IN_BI
+    - U_PRESALE
+    - U_franchiseName
+    - CardName
+    - CreateDate
+
+JDT1:
+  object_type: table
+  strategy: incremental_append
+  primary_key:
+    - TransId
+    - Line_ID
+  watermark_column: RefDate
+  idempotent_append: true
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - TransId
+    - Line_ID
+    - Account
+    - Credit
+    - Debit
+    - RefDate
+    - ShortName
+    - ContraAct
+    - TransType
+
+OJDT:
+  object_type: table
+  strategy: incremental_append
+  primary_key:
+    - TransId
+  watermark_column: RefDate
+  idempotent_append: true
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - TransId
+    - RefDate
+    - TransType
+    - Memo
+    - BaseRef
+
+OPCH:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  watermark_column_ts: UpdateTS
+  initial_load:
+    start: "2023-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - DocDueDate
+    - DocStatus
+    - DocTotal
+    - VatSum
+    - GrosProfit
+    - UpdateDate
+    - UpdateTS
+    - BPLId
+    - BPLName
+    - CANCELED
+    - CardCode
+    - CardName
+    - Comments
+    - PeyMethod
+    - SeqCode
+    - Serial
+    - U_Store
+    - TaxDate
+    - TransId
+
+INV3:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+    - ExpnsCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - ExpnsCode
+    - LineTotal
+    - LineNum
+
+INV12:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  header_table: OINV
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - MainUsage
+
+QUT12:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  header_table: OQUT
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - MainUsage
+
+RIN12:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - MainUsage
+
+OUSG:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - ID
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ID
+    - Usage
+
+"@ITEM_FAMILY":
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - Code
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - Code
+    - Name
+
+"@ITEM_SUB_CLASS":
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - Code
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - Code
+    - Name
+
+"@ITEM_CLASS":
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - Code
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - Code
+    - Name
+
+ITM1:
+  object_type: table
+  strategy: full_reload
+  frequency: diaria 
+  primary_key:
+    - ItemCode
+    - PriceList
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ItemCode
+    - Price
+    - PriceList
+
+OITW:
+  object_type: table
+  strategy: full_reload
+  frequency: diaria #daily
+  primary_key:
+    - ItemCode
+    - WhsCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ItemCode
+    - WhsCode
+    - OnHand
+    - IsCommited
+    - AvgPrice
+    - OnOrder
+
+OINM:
+  object_type: view
+  strategy: incremental_upsert
+  frequency: diaria
+  primary_key:
+    - TransNum
+  watermark_column: DocDate
+  initial_load:
+    start: "2026-01-01"
+    end: null
+    window_months: 3
+  columns:
+    - TransNum
+    - DocDate
+    - ItemCode
+    - Warehouse
+    - InQty
+    - OutQty
+    - TransValue
+    - CalcPrice
+    - Balance
+    - TransType
+    - CreatedBy
+    - BASE_REF
+    - DocLineNum
+
+OACT:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - AcctCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - AcctCode
+    - AcctName
+
+OCRG:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - GroupCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - GroupCode
+    - GroupName
+
+OBPL:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - BPLId
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - BPLId
+    - BPLName
+    - U_NOMENCLATURE
+
+OWHS:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - WhsCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - WhsCode
+    - WhsName
+    - BPLid
+    - U_STORE
+    - Inactive
+
+NFN1:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - ObjectCode
+    - DocSubType
+    - SeqCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ObjectCode
+    - DocSubType
+    - SeqCode
+    - SeqName
+
+OSLP:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - SlpCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - SlpCode
+    - SlpName
+    - U_STORE
+
+"@STORES":
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - Code
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - Code
+    - Name
+
+PCH6:
+  object_type: table
+  strategy: full_reload
+  frequency: diaria 
+  primary_key:
+    - DocEntry
+    - InstlmntID
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DueDate
+    - InsTotal
+    - InstlmntID
+    - Paid
+    - Status
+
+INV6:
+  object_type: table
+  strategy: incremental_via_header
+  frequency: diaria #daily
+  primary_key:
+    - DocEntry
+    - InstlmntID
+  watermark_column: null
+  header_table: OINV
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DueDate
+    - InsTotal
+    - InstlmntID
+    - Paid
+    - Status
+
+OMRC:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - FirmCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - FirmCode
+    - FirmName
+
+OPLN:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - ListNum
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ListNum
+    - ListName
+
+OEXD:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - ExpnsCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - ExpnsCode
+    - ExpnsName
+
+OUSR:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - INTERNAL_K
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - INTERNAL_K
+    - USER_CODE
+    - U_NAME
+    - Department
+
+OVPM:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DocNum
+    - DocType
+    - DocDate
+    - TaxDate
+    - DocDueDate
+    - UpdateDate
+    - UpdateTS
+    - Canceled
+    - CardCode
+    - CardName
+    - BPLId
+    - DocTotal
+    - DocCurr
+    - CashSum
+    - TrsfrSum
+    - CheckSum
+    - CreditSum
+    - NoDocSum
+    - TransId
+    - JrnlMemo
+
+
+PCH1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: OPCH
+  header_watermark_column: UpdateDate
+  header_watermark_column_ts: UpdateTS
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - LineNum
+    - ItemCode
+    - WhsCode
+    - AcctCode
+    - Usage
+    - Quantity
+    - Price
+    - PriceBefDi
+    - LineTotal
+    - VatSum
+    - INMPrice
+    - DiscPrcnt
+    - BaseEntry
+    - BaseType
+
+PCH12:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - MainUsage
+
+OPOR:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - CreateDate
+    - UpdateDate
+    - DocStatus
+    - CANCELED
+    - CardCode
+    - CardName
+    - DocTotal
+    - BPLId
+    - UserSign
+
+POR1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: OPOR
+  header_watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - LineNum
+    - BaseEntry
+    - ItemCode
+    - WhsCode
+    - Quantity
+    - OpenQty
+    - LineStatus
+    - Price
+    - LineTotal
+    - BaseType
+
+OPRQ:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - CreateDate
+    - UpdateDate
+    - DocStatus
+    - CANCELED
+    - UserSign
+    - BPLId
+    - U_externalTicket
+    - U_externalTicketDate
+
+PRQ1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: OPRQ
+  header_watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - LineNum
+    - ItemCode
+    - WhsCode
+    - Quantity
+    - OpenQty
+    - LineStatus
+
+ODLN:
+  object_type: table
+  strategy: incremental_upsert
+  primary_key:
+    - DocEntry
+  watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - DocNum
+    - DocDate
+    - CreateDate
+    - UpdateDate
+    - DocStatus
+    - CANCELED
+    - CardCode
+    - CardName
+    - BPLId
+
+DLN1:
+  object_type: table
+  strategy: incremental_via_header
+  primary_key:
+    - DocEntry
+    - LineNum
+  watermark_column: null
+  header_table: ODLN
+  header_watermark_column: UpdateDate
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - LineNum
+    - BaseEntry
+    - BaseLine
+    - BaseType
+    - ItemCode
+    - WhsCode
+    - Quantity
+    - LineStatus
+
+RIN3:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+    - ExpnsCode
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+    - ExpnsCode
+    - LineNum
+    - LineTotal
+
+RIN21:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - DocEntry
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - DocEntry
+
+"@PROFIT_RANKING":
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - U_Store
+    - U_Date
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - U_Store
+    - U_Date
+    - U_Profit
+
+# --- HR ---
+
+OHEM:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - empID
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - empID
+    - salesPrson
+    - firstName
+    - middleName
+    - lastName
+    - startDate
+    - termDate
+    - dept
+    - position
+    - branch
+    - Active
+
+AHEM:
+  object_type: table
+  strategy: full_reload
+  primary_key:
+    - LogInstanc
+  watermark_column: null
+  initial_load:
+    start: null
+    end: null
+    window_months: null
+  columns:
+    - LogInstanc
+    - empID
+    - salesPrson
+    - firstName
+    - middleName
+    - lastName
+    - startDate
+    - termDate
+    - dept
+    - position
+    - branch
+    - Active
+    - UserSign
+    - UpdateDate
+    - CreateDate

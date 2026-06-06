@@ -1,0 +1,145 @@
+version: 2
+
+models:
+  - name: item_master_oitm
+    description: Item master data. One record per item.
+    columns:
+      - name: item_code
+        description: Primary key of the item in SAP.
+        tests:
+          - not_null
+          - unique
+
+  - name: item_price_itm1
+    description: Item prices by price list. Composite key item_code + price_list_number.
+    columns:
+      - name: item_code
+        description: Item (ItemCode, FK to OITM).
+        tests:
+          - not_null
+      - name: price_list_number
+        description: Price list (PriceList, FK to OPLN).
+        tests:
+          - not_null
+
+  - name: warehouse_stock_oitw
+    description: Item stock by warehouse. Composite key item_code + warehouse_code.
+    columns:
+      - name: item_code
+        description: Item (ItemCode, FK to OITM).
+        tests:
+          - not_null
+      - name: warehouse_code
+        description: Warehouse (WhsCode, FK to OWHS).
+        tests:
+          - not_null
+
+  - name: inventory_movement_oinm
+    description: >
+      SAP B1 inventory audit trail (OINM / Whse Journal). One line per document line
+      that changes inventory (sales invoice, purchase invoice, credit memo, delivery, transfer,
+      inventory adjustment, revaluation, physical count). Single source for reconstructing
+      inventory balance + value by item × warehouse at any past date.
+
+      In SAP HANA it is exposed as a **view**, not a base table. The ingestion materializes only the 12
+      required columns (out of ~110 available in the view).
+
+      Validation: `SUM(inflow_quantity - outflow_quantity)` per (item, warehouse) matches 100%
+      with `OITW.OnHand` when the history is complete since the company started operating.
+
+      Consumed by [[inventory_movements]] in the int layer (enriched with item hierarchy,
+      warehouse, and enum translation).
+    columns:
+      - name: transaction_number
+        description: >
+          Movement PK (TransNum). Always increasing — can be used as a watermark
+          if the ingestion becomes incremental in the future.
+        tests: [not_null, unique]
+      - name: movement_date
+        description: Movement date (DocDate). TIMESTAMP in HANA but the time is always 00:00 — effective granularity is day.
+        tests: [not_null]
+      - name: item_code
+        description: Item moved (ItemCode → OITM).
+        tests: [not_null]
+      - name: warehouse_code
+        description: Warehouse of the movement (Warehouse → OWHS).
+        tests: [not_null]
+      - name: inflow_quantity
+        description: Quantity received into the warehouse in this movement (InQty). 0 when it is a pure outflow.
+      - name: outflow_quantity
+        description: Quantity issued from the warehouse in this movement (OutQty). 0 when it is a pure inflow.
+      - name: transaction_amount
+        description: >
+          Financial value of the movement (TransValue). Positive on inflows, negative on outflows.
+          **Do NOT confuse with the inventory balance value** — to compute the current inventory
+          value use `cumulative_quantity × calculated_average_price` in the int layer.
+      - name: calculated_average_price
+        description: >
+          Average item price AFTER this movement (CalcPrice). It is the `AvgPrice` recalculated
+          by SAP on every receipt into the warehouse (moving average). Per item × warehouse.
+      - name: inventory_value_after_movement
+        description: >
+          Financial value of the item × warehouse inventory AFTER this movement (OINM Balance /
+          "Stock Balance"). Calculated by SAP cumulatively since the start of operations,
+          updated on every movement. **Independent of the ingested window** — using it directly avoids
+          a cumulative sum starting from zero. Validation: matches `OITW.OnHand × OITW.AvgPrice`
+          for the last movement of each (item, warehouse) within rounding tolerance.
+      - name: transaction_type
+        description: >
+          Numeric SAP B1 transaction type code (TransType). Official mapping
+          (per the SAP B1 Help Portal):
+
+          - **13** A/R Invoice (sales invoice)
+          - **14** A/R Credit Memo (customer credit memo)
+          - **15** Delivery
+          - **16** Returns (delivery return)
+          - **18** A/P Invoice (purchase invoice)
+          - **19** A/P Credit Memo (return to supplier)
+          - **20** Goods Receipt (receipt without a base document)
+          - **21** Goods Return (goods receipt return)
+          - **58** Stock Update (inventory update)
+          - **59** Goods Receipt manual
+          - **60** Goods Issue manual
+          - **67** Inventory Transfer (transfer between warehouses — generates 2 lines: outflow in warehouse A, inflow in B)
+          - **68** Work Instructions (production order)
+          - **69** Landed Costs (import costs)
+          - **132** Correction Invoice
+          - **162** Inventory Revaluation (revaluation without changing qty — qty=0, value≠0)
+          - **10000071** Inventory Posting (physical count / cycle count)
+          - **310000001** Initial Quantity (initial balance — only in the historical load)
+
+          New types that appear get a generic fallback in the int layer.
+        tests: [not_null]
+      - name: source_doc_entry
+        description: DocEntry of the document that originated the movement (CreatedBy — confusing in SAP, it is the document, not the user).
+      - name: source_document_number
+        description: Textual reference of the source document (BASE_REF — typically the DocNum of the invoice/delivery/transfer).
+      - name: source_line_number
+        description: Line number within the source document (DocLineNum).
+
+  - name: item_family
+    description: Item family table (SAP user-defined field — @ITEM_FAMILY).
+    columns:
+      - name: family_code
+        description: Primary key of the family (Code of the user-defined table @ITEM_FAMILY).
+        tests:
+          - not_null
+          - unique
+
+  - name: item_class
+    description: Item class table (SAP user-defined field — @ITEM_CLASS).
+    columns:
+      - name: class_code
+        description: Primary key of the class (Code of the user-defined table @ITEM_CLASS).
+        tests:
+          - not_null
+          - unique
+
+  - name: item_sub_class
+    description: Item sub-class table (SAP user-defined field — @ITEM_SUB_CLASS).
+    columns:
+      - name: sub_class_code
+        description: Primary key of the sub-class (Code of the user-defined table @ITEM_SUB_CLASS).
+        tests:
+          - not_null
+          - unique

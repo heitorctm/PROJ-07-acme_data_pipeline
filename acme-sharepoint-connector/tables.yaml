@@ -1,0 +1,14 @@
+wholesale_goals:
+  url: "https://example.sharepoint.com/:x:/s/AnalyticsSite/PLACEHOLDER_WHOLESALE_GOALS_SHARE_ID"
+  sheet: "Wholesale Goals"
+  header: 0
+
+retail_goals:
+  url: "https://example.sharepoint.com/:x:/s/AnalyticsSite/PLACEHOLDER_RETAIL_GOALS_SHARE_ID"
+  sheet: "Retail Goals"
+  header: 0
+
+store_mapping:
+  url: "https://example.sharepoint.com/:x:/s/AnalyticsSite/PLACEHOLDER_STORE_MAPPING_SHARE_ID"
+  sheet: "Sheet1"
+  header: 0

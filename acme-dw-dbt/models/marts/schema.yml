@@ -1,0 +1,484 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      Date dimension built via a native SQL Server tally table (cross joins + row_number).
+      Covers 2023-01-01 to 2035-12-31 — the entire lifespan of Acme data + long-term
+      due dates of inbound invoices (max observed: 2034-05-30).
+
+      Month and weekday names in pt-BR. `dbt_date` was evaluated and dropped because it
+      lacks a `sqlserver__` implementation for several macros.
+
+      Granularity: 1 row per date (key: `date`).
+
+      ## Useful derived attributes
+
+      - `month_year` — 'mai/2026' format, ready to use as a chart axis in Power BI.
+      - `weekend` — 'yes'/'no' flag.
+      - `iso_week` — week number per the ISO 8601 standard (important for tax reporting).
+      - `previous_day`, `next_day`, `same_day_previous_year` — for time-comparison
+        analyses (D-1, D+1, YoY).
+
+      ## How to join
+
+      In facts, join via `fact.issue_date = dim_date.date` (or other dates: accrual,
+      due date, payment, etc. — each fact may have multiple relationships with dim_date).
+
+      ## Known follow-ups
+
+      - Brazilian national holidays are not flagged yet. When business-day calculations
+        are needed, add a `feriado` column via a custom macro or a helper package.
+    columns:
+      - name: date
+        description: Date in date format — primary key of the dimension.
+        tests: [not_null, unique]
+      - name: year
+        description: Year (e.g. 2026).
+      - name: quarter
+        description: Quarter of the year (1-4).
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: [1, 2, 3, 4] } }
+      - name: month
+        description: Month of the year (1-12).
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] } }
+      - name: month_name
+        description: Month name in pt-BR ('january'..'december').
+      - name: month_short_name
+        description: Short month name in pt-BR ('jan'..'dec').
+      - name: month_year
+        description: "'short_month/year' format (e.g. 'mai/2026'). Ready to use as a chart axis."
+      - name: day
+        description: Day of the month (1-31).
+      - name: day_of_year
+        description: Day of the year (1-366).
+      - name: day_of_week
+        description: Day of the week (1=Sunday, 7=Saturday — `dbt_date` standard).
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: [1, 2, 3, 4, 5, 6, 7] } }
+      - name: day_of_week_name
+        description: Day-of-week name in pt-BR ('sunday'..'saturday').
+      - name: day_of_week_short_name
+        description: Short day-of-week name ('sun'..'sat').
+      - name: weekend
+        description: "'yes' if Saturday or Sunday, 'no' otherwise."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: week_of_year
+        description: Week number of the year (1-53, US standard — week starts on Sunday).
+      - name: iso_week
+        description: ISO 8601 week number (1-53, week starts on Monday).
+      - name: week_start
+        description: First day of the week (Sunday).
+      - name: week_end
+        description: Last day of the week (Saturday).
+      - name: month_start
+        description: First day of the month.
+      - name: month_end
+        description: Last day of the month.
+      - name: quarter_start
+        description: First day of the quarter.
+      - name: quarter_end
+        description: Last day of the quarter.
+      - name: year_start
+        description: First day of the year.
+      - name: year_end
+        description: Last day of the year.
+      - name: previous_day
+        description: Date of the previous day (D-1).
+      - name: next_day
+        description: Date of the next day (D+1).
+      - name: same_day_previous_year
+        description: Same date in the previous year (YoY).
+
+  - name: dim_item
+    description: >
+      Item dimension for Power BI. Inherits from `int_common.item` the entire hierarchy
+      (family, class, subclass), ABC curve, usage flags (stockable/sellable/purchased/made_to_order),
+      physical attributes (weight, lead time), status (valid_for_use, blocked) and manufacturer.
+
+      Mart-specific derivations:
+
+      - `item_type` — nature bucket derived from is_sellable × is_stockable × is_purchased.
+        Ignores blocking (which is status, not nature).
+      - `code_prefix` — first 2 chars of the code (DA, SV, DW, SF, AC...).
+      - `category_code` — coarse bucket by prefix. Today it maps only DA→expense,
+        SV→service; other prefixes fall into "product". Expand as the meaning of the
+        other prefixes gets cataloged.
+
+      ## Master-data coverage
+
+      Roughly 60% of items have no family/class, 88% have no ABC curve. This reflects the
+      state of the master data in SAP, not a model bug. They are mostly administrative
+      expenses, services and items in the classification backlog. Do not use `not_null` on
+      family_name/abc_curve.
+    columns:
+      - name: item_code
+        description: Item primary key (SAP ItemCode). The 2-char prefix indicates the commercial family.
+        tests:
+          - not_null
+          - unique
+      - name: item_name
+        description: >
+          Item name in lowercase. Allows NULL — 9 items today (jan/2026) have no
+          ItemName in SAP (incomplete master data or blocked with no name). A 'warn'
+          severity test flags if this set grows.
+        tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: family_code
+        description: Commercial family code (SAP U_FAMILY). Empty for unclassified items.
+      - name: family_name
+        description: Commercial family name in lowercase. NULL when the code does not exist in @ITEM_FAMILY.
+      - name: class_code
+        description: Class code (U_CLASS).
+      - name: class_name
+        description: Class name in lowercase.
+      - name: sub_class_code
+        description: Subclass code (U_SUB_CLASS).
+      - name: sub_class_name
+        description: Subclass name in lowercase.
+      - name: abc_curve
+        description: ABC classification (A/B/C). NULL for 88% of items — incomplete master data in SAP.
+      - name: unit_of_measure
+        description: Unit of measure (unid, m², kg...).
+      - name: unit_weight_kg
+        description: Unit weight in kg (OITM.SWeight1). NULL for services and administrative expenses.
+      - name: lead_time_days
+        description: Supply lead time in days (U_LEAD_TIME). NULL when not provided.
+      - name: is_stockable
+        description: '"yes" if the item is kept in inventory (InvntItem=Y).'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: is_sellable
+        description: '"yes" if the item can be sold (SellItem=Y).'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: is_purchased
+        description: '"yes" if the item can be purchased (PrchseItem=Y).'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: is_made_to_order
+        description: '"yes" if the item is supplied made-to-order (U_MADE_TO_ORDER=S/Y). Today 100% of items are "no".'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: valid_for_use
+        description: '"yes" if the item is enabled in the master record (validFor=Y).'
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: blocked
+        description: >
+          "yes" if the item is frozen/blocked for transactions (frozenFor=Y). Not
+          mutually exclusive with valid_for_use — an item can be valid AND blocked at the same time.
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['yes', 'no'] } }
+      - name: manufacturer_code
+        description: Manufacturer code (FirmCode). 1 (unassigned) is the SAP default.
+      - name: manufacturer_name
+        description: Manufacturer name in lowercase. NULL when the code has no match in OMRC.
+      - name: item_type
+        description: >
+          Item nature derived from the Sell × Invnt × Prchse flags:
+          'product' (sellable + stockable), 'service' (sellable without inventory),
+          'administrative purchase' (not sellable + purchased), 'others' (other combinations,
+          e.g. discontinued items with no flow).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['product', 'service', 'administrative purchase', 'others']
+      - name: code_prefix
+        description: First 2 characters of the code (DA, SV, DW, SF, AC, FE, FX, FR, PI, IR...).
+        tests:
+          - not_null
+      - name: category_code
+        description: >
+          Coarse bucket by code prefix. Today it maps DA→'administrative expense',
+          SV→'service'; the rest → 'product'. Refine as the meaning of the other
+          prefixes gets cataloged.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['administrative expense', 'service', 'product']
+
+  - name: dim_employees
+    description: >
+      People dimension for Power BI — salespeople, managers, B2B executives
+      and any profile registered in OSLP that may appear as the author of a
+      sale, quote or order.
+
+      Granularity: 1 row per `employee_code` (SlpCode).
+
+      ## Why "employees" and not "salesperson"
+
+      Deliberately broad scope. When the BI wants "sales by manager" or
+      "targets by B2B executive", the same dim handles it without having to create
+      new dims per role. A person's job title/role varies over time and lives in
+      `salesperson_bridge.role` — this dim keeps only the stable identity.
+
+      ## Store lives in the bridge
+
+      `store` is deliberately not here — it is a fact (changes over time). For "which
+      store employee X was at on date D", join with [[salesperson_bridge]]
+      on `employee_code = salesperson_code` and filter by valid_from/valid_to.
+
+      ## Status
+
+      - `active` — person in normal use in SAP.
+      - `inactive` — SlpName starts with 'NÃO UTILIZAR' (5 cases today, jan/2026).
+        Kept to preserve authorship of historical invoices.
+
+      Codes with no store in the master record (U_STORE null) do not enter the salesperson_bridge,
+      but still appear here (the dim covers every OSLP SlpCode) —
+      just without `hire_date`.
+    columns:
+      - name: employee_code
+        description: Primary key. SlpCode from OSLP in SAP.
+        tests:
+          - not_null
+          - unique
+      - name: employee_name
+        description: >
+          Canonical name in lowercase + accent-insensitive — the first part of the
+          SlpName before the first ' - '. Ready to use as a BI label.
+        tests:
+          - not_null
+      - name: sap_full_name
+        description: >
+          Original SlpName text (e.g. 'João Silva - Mega Loja RJ -
+          Vendedor'). Preserved for auditing.
+        tests:
+          - not_null
+      - name: status
+        description: "'active' or 'inactive' (SlpName starts with 'NÃO UTILIZAR')."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['active', 'inactive'] } }
+      - name: hire_date
+        description: >
+          Month of the salesperson's FIRST TARGET (proxy for onboarding). Derived from
+          `MIN(salesperson_bridge.valid_from)` by NAME (`normalized_name`) — the bridge
+          baseline is now dated by the salesperson's 1st target, with a 2025-01-01 floor.
+
+          Rule: anyone who joined before 2025 is set to `2025-01-01`; anyone who joined in
+          2025+ gets the real month of their 1st target. Intended use: flag recent /
+          "breakout" salespeople. It is NOT an HR hire date.
+
+          Coverage: NULL for anyone who never had a target nor a row in the bridge (inactive /
+          no store in the master record); anyone in the bridge but who never had a target
+          inherits the 2025-10-01 fallback. LIMITATION: a salesperson who sold before getting
+          their 1st target is dated by the target — the ceiling of any metric based on the target alone.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: "'2025-01-01'"
+
+  - name: dim_partner
+    description: >
+      Business partner dimension for Power BI — covers customers,
+      suppliers and leads in the same structure.
+
+      Granularity: 1 row per `partner_code` (SAP CardCode).
+
+      ## Scope
+
+      Today (jan/2026): 72,893 partners — 71,262 customers, 1,630 suppliers,
+      1 lead. Filtering by role (customer × supplier) is done in the BI via
+      `partner_type`.
+
+      ## Mart derivations
+
+      - `cpf_cnpj_type` — buckets the document by the length of the normalized value:
+        `'cpf'` (11 digits), `'cnpj'` (14), `'no document'` (SAP% fallback
+        when the field came in empty) and `'irregular'` (any other length —
+        bad master data). Today 14% (10,174 partners) fall into 'irregular'
+        — a data-quality signal useful for B2B vs B2C.
+
+      ## Visibility (no exclusion)
+
+      The dim is **complete** — it does not filter by `show_in_bi`. The ~16
+      `'no'` partners (internal/test/inactive) stay in the dim as a lookup; the flag is
+      exposed in the `show_in_bi` column for the BI to segment. The visibility rule is
+      applied by the **fact** (visible partner + the global override
+      `document_show_in_bi='yes'`, which bypasses all filters), so filtering the
+      dim would leave orphan FKs for documents forced through from a hidden partner.
+
+      ## Joins
+
+      - Responsible salesperson: `dim_partner.salesperson_code = dim_employees.employee_code`.
+      - In facts: `fact.partner_code = dim_partner.partner_code`.
+
+      ## Known "dirty" master data
+
+      `group_name` has typo-driven duplicates ('employee'/'funcionário',
+      'prestador de serviços'/'prestador de servisos', '.'). We do not normalize
+      here — the decision is to let the BI group when needed, rather than
+      maintaining an eternal mapping. Same goes for `franchise_name` (free text).
+    columns:
+      - name: partner_code
+        description: Primary key. CardCode from OCRD in SAP.
+        tests:
+          - not_null
+          - unique
+      - name: partner_name
+        description: Partner name in lowercase (CardName from OCRD).
+      - name: partner_type
+        description: "'customer', 'supplier' or 'lead' (mapped from CardType C/S/L)."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['customer', 'supplier', 'lead'] } }
+      - name: group_code
+        description: Partner group code (GroupCode from OCRD).
+      - name: group_name
+        description: >
+          Group name in lowercase, resolved via OCRG. Raw text — contains
+          typo-driven duplicates (see model description).
+      - name: salesperson_code
+        description: >
+          Salesperson responsible for the master record (SlpCode from OCRD). Resolves the
+          name via the relationship with [[dim_employees]].
+      - name: franchise_name
+        description: >
+          Franchise associated with the partner in lowercase (U_franchiseName from OCRD).
+          Free text — polluted with variations. Useful only as a coarse filter.
+      - name: presale_channel
+        description: >
+          Source channel of the partner for pre-sale. 94% of partners are
+          'no'; other values: 'crm', 'crm steel frame',
+          'crm drywall', 'crm floors', 'crm acoustic',
+          'crm frames', 'crm mortar', 'internal (google)'.
+      - name: cpf_cnpj_official
+        description: CPF/CNPJ officially registered in LicTradNum of OCRD (with punctuation).
+      - name: cpf_cnpj_normalized
+        description: >
+          CPF/CNPJ without punctuation extracted from the Password field of OCRD. Falls back to
+          `'SAP' + partner_code` when empty — guarantees a non-null key for
+          cross-referencing with external sources.
+        tests:
+          - not_null
+      - name: cpf_cnpj_type
+        description: >
+          Buckets the document by the length of the normalized value. `'cpf'` (11),
+          `'cnpj'` (14), `'no document'` (SAP% fallback) and `'irregular'`
+          (any other length — bad master data).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['cpf', 'cnpj', 'no document', 'irregular']
+      - name: registration_date
+        description: Partner registration date in SAP (CreateDate from OCRD).
+      - name: updated_date
+        description: Date of the last update (UpdateDate from OCRD).
+      - name: show_in_bi
+        description: >
+          Partner visibility in the BI ('yes'/'no'). **An attribute, not a filter** —
+          the dim is a complete lookup. The visibility rule is applied in the fact
+          (partner 'yes' OR a document "force display"). Use in the BI to
+          segment/hide the ~16 internal/test partners.
+
+  - name: dim_store
+    description: >
+      Store dimension for Power BI. Granularity: 1 row per
+      `store_code` (Code from @STORES in SAP).
+
+      ## Displayed name
+
+      `store_name` uses the commercial standardization from SharePoint (`store_mapping`)
+      — 'state-city' format (e.g. 'rj-bonsucesso', 'mg-juiz de fora'). For the
+      operational/internal stores without a mapping (administrative units, not
+      commercial), it falls back to the old SAP name — guarantees a
+      non-null label for every store referenced by a fact.
+
+      The old SAP name is NOT exposed here — it lives in [[standardized_store]]
+      in int_common for audit cases.
+
+      ## Merges
+
+      3 pairs of store_code share the same store_name due to commercial
+      unification (see the [[standardized_store]] doc). In the BI, aggregations by
+      `store_name` sum those stores together — the behavior the business wants.
+    columns:
+      - name: store_code
+        description: Primary key. Code from @STORES in SAP.
+        tests:
+          - not_null
+          - unique
+      - name: store_name
+        description: >
+          Standardized name ('state-city' format) in lowercase, with a fallback to the
+          old SAP name for the 11 operational stores without a mapping.
+        tests:
+          - not_null
+
+  - name: dim_warehouse
+    description: >
+      Warehouse dimension for Power BI. Granularity: 1 row per
+      `warehouse_code` (SAP WhsCode).
+
+      ## Concept
+
+      A warehouse is where the goods physically sit. A store can have several
+      warehouses linked to it — example: Mega Loja Japeri has `02` (megaloja),
+      `02-F` (factory), `02-C` (accounting), `02-ML` (Mercado Livre),
+      `02-MS` (master steel), `02-SD` (steel design), `02-T` (triangulation).
+
+      ## Scope
+
+      Today (jan/2026): 72 warehouses, all active in SAP. The model does NOT filter
+      inactive ones because the current master record has none — when there are some,
+      we will decide whether to keep them here as `status` or exclude them.
+
+      ## Coverage
+
+      ~43% (31 warehouses) have a linked `store_code` — the "commercial" ones (lj,
+      megaloja). ~57% (41 warehouses) are operational (factory, triangulation,
+      Mercado Livre, direct shipping, accounting) and have NULL `store_code` and
+      `store_name`.
+
+      ## Joins
+
+      - In facts: `fact.warehouse_code = dim_warehouse.warehouse_code`.
+      - Linked store: resolves via `store_code` to `dim_store` (NULL for
+        operational warehouses — they have no store).
+
+      `store_name` here replicates the same rule as [[dim_store]]: it uses the new name
+      from `store_mapping` ('state-city' format), with a fallback to the old SAP name.
+    columns:
+      - name: warehouse_code
+        description: Primary key. WhsCode from OWHS — alphanumeric (e.g. 02, 02-F, 02-T).
+        tests:
+          - not_null
+          - unique
+      - name: warehouse_name
+        description: Warehouse name in lowercase (WhsName from OWHS).
+        tests:
+          - not_null
+      - name: branch_id
+        description: ID of the branch the warehouse belongs to (BPLid from OWHS).
+      - name: branch_name
+        description: Branch name in lowercase (resolved via OBPL).
+      - name: branch_nomenclature
+        description: "Internal branch nomenclature (U_NOMENCLATURE from OBPL) — e.g. 'mega store rj'."
+      - name: store_code
+        description: >
+          Store linked to the warehouse (U_STORE from OWHS). NULL for operational
+          warehouses with no physical store (factory, triangulation, marketplace, etc.).
+      - name: store_name
+        description: >
+          Name of the linked store, standardized by `store_mapping` ('state-city'
+          format), with a fallback to the old SAP name. NULL when the
+          warehouse has no linked store.

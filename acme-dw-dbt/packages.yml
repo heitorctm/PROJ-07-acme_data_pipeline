@@ -1,0 +1,8 @@
+packages:
+  - package: dbt-labs/dbt_utils
+    version: [">=1.3.0", "<2.0.0"]
+  # dbt-native observability: materializes models in the `elementary` schema that
+  # record runs, tests, and anomalies. Consumed by the `edr` CLI for the
+  # HTML report. Keep major.minor aligned with the CLI in pyproject.toml.
+  - package: elementary-data/elementary
+    version: 0.23.1

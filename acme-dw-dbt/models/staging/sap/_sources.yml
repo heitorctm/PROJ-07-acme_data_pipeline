@@ -1,0 +1,112 @@
+version: 2
+
+sources:
+  - name: raw_sap
+    database: SAP_MIRROR
+    schema: raw_sap
+    description: >
+      Faithful mirror of the SAP Business One (SAP HANA) source tables, ingested by a
+      dedicated ingestion pipeline (linked server + SQL Agent). Raw SAP names/columns/types,
+      with no transformation. **Do not consume directly** — always go through staging (`stg_sap`).
+    tables:
+      # sales
+      - name: OINV
+        description: Outgoing invoice headers (A/R Invoice).
+      - name: INV1
+        description: Outgoing invoice lines.
+      - name: INV3
+        description: Additional expenses on outgoing invoices (freight, insurance, etc.).
+      - name: INV6
+        description: Installments on outgoing invoices.
+      - name: INV12
+        description: Tax usage (header) of outgoing invoices.
+      - name: OQUT
+        description: Sales quotation headers (Sales Quotation).
+      - name: QUT1
+        description: Sales quotation lines.
+      - name: QUT12
+        description: Tax usage (header) of sales quotations.
+      - name: ORIN
+        description: Sales return headers (A/R Credit Memo).
+      - name: RIN1
+        description: Sales return lines.
+      - name: RIN3
+        description: Additional expenses on sales returns.
+      - name: RIN12
+        description: Tax usage (header) of sales returns.
+      - name: RIN21
+        description: Document reference for returns (partial ingestion — DocEntry only).
+      - name: ORDR
+        description: Sales order headers (Sales Order).
+      - name: RDR1
+        description: Sales order lines.
+      - name: ODLN
+        description: Delivery/shipment headers (Delivery).
+      - name: DLN1
+        description: Delivery/shipment lines.
+      # purchases
+      - name: OPCH
+        description: Incoming invoice headers (A/P Invoice).
+      - name: PCH1
+        description: Incoming invoice lines.
+      - name: PCH6
+        description: Installments on incoming invoices.
+      - name: PCH12
+        description: Tax usage (header) of incoming invoices.
+      - name: OPOR
+        description: Purchase order headers (Purchase Order).
+      - name: POR1
+        description: Purchase order lines.
+      - name: OPRQ
+        description: Purchase request headers (Purchase Request).
+      - name: PRQ1
+        description: Purchase request lines.
+      # items
+      - name: OITM
+        description: Item/product master (Item Master).
+      - name: ITM1
+        description: Item prices by price list.
+      - name: OITW
+        description: Item stock by warehouse (balance, committed, moving average cost).
+      - name: OINM
+        description: Inventory movements (inventory transaction ledger).
+      - name: "@ITEM_FAMILY"
+        description: User-defined table (UDT) — item families.
+      - name: "@ITEM_CLASS"
+        description: User-defined table (UDT) — item classes.
+      - name: "@ITEM_SUB_CLASS"
+        description: User-defined table (UDT) — item subclasses.
+      # master_data
+      - name: OCRD
+        description: Business partner master (customers/suppliers).
+      - name: OSLP
+        description: Sales employee master (Sales Employee); includes store in U_STORE.
+      - name: OBPL
+        description: Branch master (Branch / Business Place).
+      - name: OWHS
+        description: Warehouse master (Warehouse).
+      - name: OCRG
+        description: Business partner groups (Customer Groups).
+      - name: OMRC
+        description: Manufacturer master (Manufacturers).
+      - name: OPLN
+        description: Price list master (Price Lists).
+      - name: OEXD
+        description: Additional expenses master (Additional Expenses).
+      - name: OUSG
+        description: Tax usage catalog (tax purpose of operations).
+      - name: NFN1
+        description: Fiscal numbering series.
+      - name: OUSR
+        description: SAP user master.
+      - name: "@STORES"
+        description: User-defined table (UDT) — Acme store master.
+      # finance
+      - name: OJDT
+        description: Journal entry headers (Journal Entry).
+      - name: JDT1
+        description: Journal entry lines (double-entry postings).
+      - name: OVPM
+        description: Outgoing payments (Outgoing Payments).
+      - name: OACT
+        description: Chart of accounts (Chart of Accounts).

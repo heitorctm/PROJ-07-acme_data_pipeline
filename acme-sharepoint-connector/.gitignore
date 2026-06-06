@@ -1,0 +1,18 @@
+# Credentials
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Temporary Excel files downloaded from SharePoint
+*.xlsx
+*.xls
+~$*
+
+# IDE
+.vscode/
+.idea/
+.claude/

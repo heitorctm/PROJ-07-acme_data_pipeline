@@ -1,0 +1,31 @@
+# This monorepo groups four independent components, each with its own .gitignore.
+# Root-level catch-alls below; per-component ignores live in each subfolder.
+
+# Secrets — never commit
+.env
+*.env
+!*.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# dbt
+target/
+logs/
+dbt_packages/
+edr_target/
+
+# Excel temp (SharePoint downloads)
+*.xlsx
+*.xls
+~$*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/

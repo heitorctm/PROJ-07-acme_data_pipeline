@@ -1,0 +1,50 @@
+select
+    DocEntry                                                    as doc_entry,
+    DocNum                                                      as invoice_number,
+    CAST(DocDate as date)                                       as issue_date,
+    CAST(DocDueDate as date)                                    as due_date,
+    CAST(CreateDate as date)                                    as creation_date,
+    CAST(UpdateDate as date)                                    as updated_date,
+    UpdateTS                                                    as update_ts,
+    DocStatus                                                   as document_status,
+    CANCELED                                                    as canceled,
+    CardCode                                                    as customer_code,
+    CardName                                                    as customer_name,
+    SlpCode                                                     as salesperson_code,
+    BPLId                                                       as branch_id,
+    BPLName                                                     as branch_name,
+    SeqCode                                                     as series_code,
+    Serial                                                      as series_number,
+    PeyMethod                                                   as payment_method,
+    TransId                                                     as ledger_transaction_id,
+    CAST(TaxDate as date)                                       as accrual_date,
+    CAST(DocTotal as decimal(20, 6))                            as document_total,
+    CAST(DocTotalSy as decimal(20, 6))                          as document_total_system_currency,
+    CAST(GrosProfit as decimal(20, 6))                          as gross_profit,
+    CAST(DiscSum as decimal(20, 6))                             as header_discount,
+    CAST(VatSum as decimal(20, 6))                              as total_taxes,
+    CAST(NfeValue as decimal(20, 6))                            as nfe_amount,
+    CAST(DpmAmnt as decimal(20, 6))                             as advance_payment,
+    CAST(PaidSys as decimal(20, 6))                             as paid_amount,
+    isIns                                                       as sales_type,
+    UpdInvnt                                                    as updates_inventory,
+    LTRIM(
+        REPLACE(
+            REPLACE(
+                REPLACE(Comments, CHAR(13), ' '),
+                CHAR(9), ' '
+            ),
+            NCHAR(160), ' '
+        )
+    )                                                           as notes,
+    U_externalTicket                                              as external_ticket,
+    CAST(U_externalTicketDate as date)                            as external_ticket_date,
+    U_LOAD_KIT                                                  as load_kit,
+    U_Store                                                      as store_code,
+    U_PRESALE                                                  as presale_channel,
+    U_PROTEST                                                  as in_protest,
+    U_FINANCE_VALIDATED                                              as finance_validated,
+    U_SHOW_IN_BI                                               as show_in_bi,
+    U_TRIANGULATION                                               as triangulation,
+    _ingested_at
+from {{ source('raw_sap', 'OINV') }}

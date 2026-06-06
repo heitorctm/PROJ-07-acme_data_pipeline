@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: raw_sharepoint
+    database: SAP_MIRROR
+    schema: raw_sharepoint
+    description: >
+      Tables ingested from Acme's SharePoint (spreadsheets maintained by the
+      commercial and administrative teams). Ingestion pipeline lives outside dbt.
+    tables:
+      # master_data
+      - name: store_mapping
+        description: >
+          Visual mapping of the old store name (used in SAP) to the new name
+          standardized by management (UF-NAME format). Includes the store postal code (CEP).
+      # sales
+      - name: wholesale_goals
+        description: Daily goals per salesperson for the wholesale channel.
+      - name: retail_goals
+        description: Daily goals per salesperson for the retail channel.

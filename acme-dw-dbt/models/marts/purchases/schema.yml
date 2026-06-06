@@ -1,0 +1,258 @@
+version: 2
+
+models:
+  - name: fact_purchases
+    description: >
+      # fact_purchases
+
+      This is the table that answers "**how much merchandise for resale did
+      Acme purchase**". Each row represents **one item purchased on an inbound
+      invoice**. It is the basis for supplier-spend KPIs, purchase mix,
+      actual lead time (time between order and receipt), and acquisition cost
+      analysis.
+
+      ## What belongs here
+
+      **Only inbound invoices with the fiscal usage "Commercial Purchase"**
+      (`usage_id = 3`). Purchase orders and requisitions do not belong here —
+      they are stages prior to the actual goods receipt. When you need to
+      measure order→invoice conversion, that becomes a separate purchase-funnel
+      fact.
+
+      ## Why some invoices that exist in SAP do NOT appear here
+
+      ### 1. Only counts "Commercial Purchase" (merchandise for resale)
+
+      SAP classifies each inbound invoice line with a fiscal usage code
+      (catalog `OUSG`). Acme uses this code to distinguish very different
+      natures of "purchase":
+
+      - **3** — Commercial Purchase → product for resale (belongs here)
+      - 5 — Internal transfer between branches (not a real purchase)
+      - 7 — Consumption Purchase (internal consumption material, not resale)
+      - 8 — Fixed Asset Purchase (capital goods — machinery, furniture, etc.)
+      - 13 — Electricity (operating expense)
+      - 14 — Telephony/Internet (expense)
+      - 18 — Service Provision
+      - 19 — Generic expenses
+
+      Mixing these codes in the same KPI hides reality — "I spent
+      R$ 10M on purchases" could be 80% merchandise or 80% electricity. That
+      is why the fact is restricted to `usage_id = 3`. When you need "total
+      purchases including administrative expenses", we create a variant.
+
+      → **Technical filter:** `l.usage_id = 3` (Commercial Purchase, comes from `PCH1.Usage`).
+
+      ### 2. Does not count canceled or reversed invoices
+
+      Same logic as sales: `CANCELED = 'Y'` (canceled before becoming
+      fiscal) and `CANCELED = 'C'` (reversed after issuance) represent an
+      operation that did not happen or was voided.
+
+      In purchases this matters because ~7% of invoices are
+      canceled/reversed (a higher rate than sales) — supplier reissues the
+      invoice with a correction, etc.
+
+      → **Technical filter:** `canceled = 'no'`.
+
+      ### 3. Does not count suppliers "invisible" in BI
+
+      Same flag as sales (`U_PARTNER_SHOW_IN_BI`) but in the supplier
+      master data: 3 suppliers are flagged as `'N'` out of a universe of
+      1,630 — small test master records or internal group suppliers that
+      should not appear in management analyses.
+
+      → **Technical filter:** `partner_show_in_bi = 'yes'`.
+
+      ### 4. Does not count purchases between Acme's own companies (intercompany)
+
+      When an Acme branch "buys" from another Acme branch (internal movement
+      recorded as a fiscal purchase), this is not real group spend — it is
+      redistribution. Group `111` in the supplier master data.
+
+      **Unlike sales, in purchases we do NOT make an exception for branch 9**:
+      on the sales side, branch 9 (the group's manufacturing unit) is a
+      factory and its "internal sales" are real revenue. On the purchases
+      side, the other end of the same transaction would re-count what was
+      already counted in sales — generating double counting between the two
+      sides of the group.
+
+      → **Technical filter:** `group_code <> 111` (no exception).
+
+      ## What is NOT here (known source limitations)
+
+      **No purchase returns.** Standard SAP B1 has the OPDN table
+      (Goods Return to Supplier) that records when Acme returns merchandise
+      to the supplier — which would reduce real spend. **Acme's ingestion
+      does not bring this table today**, so the fact represents gross
+      purchases, with no return adjustment. When the source has the data,
+      it becomes a separate fact_purchase_returns with the same logic as
+      fact_sales/returns.
+
+      **No freight paid to the supplier.** In sales we use INV3 (freight
+      charged to the customer). The purchase equivalent would be PCH3 (freight
+      paid to the supplier), but it is not Acme's practice to record supplier
+      freight separately — the amount already comes embedded in the
+      merchandise price. That is why the purchase `line_total` already
+      represents the "all-in" amount paid for that item, with no additional
+      allocation needed.
+
+      **No identification of who purchased (user_id).** Standard SAP B1
+      has the `UserSign` field in OPCH with the SAP user who recorded the
+      purchase. **Acme's current ingestion does not bring this column in raw**.
+      Auditing "who bought from whom" is unavailable for now.
+      When the field is pulled into the source, it becomes an FK to dim_user.
+
+      ## Signs
+
+      All metrics are **positive**. There is no sign inversion because
+      there are no returns in the fact — what is purchased, is purchased.
+
+      ## Link to the dimensions
+
+      | FK in the fact | Dimension |
+      |---|---|
+      | `issue_date` / `accrual_date` / `due_date` | [[dim_date]] |
+      | `item_code` | [[dim_item]] |
+      | `partner_code` (supplier) | [[dim_partner]] (filter `partner_type='supplier'`) |
+      | `store_code` | [[dim_store]] |
+      | `warehouse_code` (goods receipt) | [[dim_warehouse]] |
+
+      ## Additive metrics (use SUM in BI)
+
+      - `quantity` — units purchased
+      - `line_total` — gross line amount (price × quantity)
+      - `total_taxes` — line taxes
+      - `total_cost` — `quantity × inventory_cost_price`
+
+      ## Non-additive metrics (weighted average in BI)
+
+      - `unit_price`, `price_before_discount`, `discount_percentage`
+      - `inventory_cost_price`
+
+      ## Document attributes in the fact (degenerate dimensions)
+
+      - `document_number`, `document_type`, `ledger_account`
+      - `usage_id`, `main_usage_id`, `main_usage_description`
+      - `payment_method`
+    columns:
+      - name: document_id
+        description: >
+          Document surrogate key (`'nf-' + doc_entry`). Useful for
+          joining with fact_purchase_documents (future).
+        tests:
+          - not_null
+      - name: document_type
+        description: "Discriminator. For now always 'invoice'."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: ['invoice'] } }
+      - name: doc_entry
+        description: DocEntry from OPCH.
+        tests:
+          - not_null
+      - name: line_number
+        description: LineNum within the document.
+        tests:
+          - not_null
+      - name: document_number
+        description: Fiscal number of the inbound invoice.
+      - name: issue_date
+        description: Issue date. FK to [[dim_date]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+      - name: accrual_date
+        description: Accrual date (TaxDate).
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+              config:
+                where: "accrual_date is not null"
+      - name: due_date
+        description: Installment due date (DocDueDate).
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+              config:
+                where: "due_date is not null"
+      - name: item_code
+        description: Code of the purchased item. FK to [[dim_item]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_item')
+                field: item_code
+      - name: partner_code
+        description: Supplier code. FK to [[dim_partner]].
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_partner')
+                field: partner_code
+      - name: store_code
+        description: Store code. FK to [[dim_store]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_code
+              config:
+                where: "store_code is not null and store_code <> ''"
+      - name: warehouse_code
+        description: Code of the warehouse where the merchandise is received. FK to [[dim_warehouse]].
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_warehouse')
+                field: warehouse_code
+              config:
+                where: "warehouse_code is not null"
+      - name: branch_id
+        description: Document branch.
+      - name: usage_id
+        description: "Fiscal usage of the line. Always 3 (Commercial Purchase) in this fact."
+        tests:
+          - not_null
+          - accepted_values: { arguments: { values: [3] } }
+      - name: main_usage_id
+        description: Header fiscal usage (MainUsage from PCH12).
+      - name: main_usage_description
+        description: Text description of the main usage (resolved via OUSG).
+      - name: ledger_account
+        description: Ledger account (AcctCode from PCH1).
+      - name: payment_method
+        description: Document payment method (free text).
+      - name: quantity
+        description: Quantity purchased (always positive).
+        tests:
+          - not_null
+      - name: line_total
+        description: Gross line amount (always positive).
+        tests:
+          - not_null
+      - name: total_taxes
+        description: Line taxes.
+      - name: total_cost
+        description: "`quantity × inventory_cost_price`."
+      - name: unit_price
+        description: Purchase price per unit (do not sum).
+      - name: price_before_discount
+        description: Price before the line discount (do not sum).
+      - name: discount_percentage
+        description: Discount percentage applied (do not sum).
+      - name: inventory_cost_price
+        description: Unit inventory cost (INMPrice — do not sum).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [document_type, doc_entry, line_number]

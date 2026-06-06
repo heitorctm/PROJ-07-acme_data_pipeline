@@ -18,16 +18,16 @@ warehouse ready for BI.
 ```
  SOURCES                 INGESTION  (Extract + Load)            TRANSFORM (dbt)               CONSUMPTION
 ┌──────────────┐        ┌────────────────────────────┐                                      
-│ SAP Business │        │ acme-sap-ingestion          │                                      
-│ One (HANA)   │──────► │ linked server + SQL Agent   │──► raw_sap ──────┐                   
-└──────────────┘        │ OPENQUERY push-down, incr.  │                  │                   
-                        └────────────────────────────┘                  ▼                   
-                                                            ┌────────────────────────────┐   ┌──────────┐
-┌──────────────┐        ┌────────────────────────────┐     │ acme-dw-dbt                 │   │          │
-│ SharePoint   │──────► │ acme-sharepoint-connector   │──►  │ staging → int → mart        │──►│ Power BI │
-│ (Excel)      │  ◄──── │ Microsoft Graph (2-way)     │ raw_│ Kimball · ~450 tests ·      │   │          │
-└──────────────┘ publish└────────────────────────────┘ sp  │ Elementary observability    │   └──────────┘
-                                                            └────────────────────────────┘   
+│ SAP Business │        │ acme-sap-ingestion         │                                      
+│ One (HANA)   │──────► │ linked server + SQL Agent  │───► raw_sap ──────┐                   
+└──────────────┘        │ OPENQUERY push-down, incr. │                   │                   
+                        └────────────────────────────┘                   ▼                   
+                                                                ┌────────────────────────────┐   ┌──────────┐
+┌──────────────┐         ┌────────────────────────────┐         │ acme-dw-dbt                │   │          │
+│ SharePoint   │ ──────► │ acme-sharepoint-connector  │ ─────►  │ staging → int → mart       │──►│ Power BI │
+│ (Excel)      │ ◄────── │ Microsoft Graph (2-way)    │ raw_shp │ Kimball · ~450 tests ·     │   │          │
+└──────────────┘ publish └────────────────────────────┘         │ Elementary observability   │   └──────────┘
+                                                                └────────────────────────────┘   
                                                                                               
         ▲ schedules / data-aware (Assets) ───────  acme-airflow  ───────────────────────────►
 ```
